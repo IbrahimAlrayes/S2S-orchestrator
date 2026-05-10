@@ -14,6 +14,8 @@ demo/.next/
 demo/.env.local
 
 # Local-only AI context files (not for repo)
+CLAUDE.md
 CLAUDE.MD
+AGENT.md
 AGENT.MD
 .ignore
