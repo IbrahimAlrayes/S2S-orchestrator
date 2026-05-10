@@ -36,21 +36,24 @@ Modular pipeline driven by a hold-to-talk button. The browser records audio, the
 
 ## External Services (not in this repo)
 
-All three AI services are hosted by Nusuk at `https://dev.nusukai.com`. All require a JWT obtained from `/auth/token`.
+STT and TTS are hosted by Nusuk at `https://dev.nusukai.com` and share one `NusukTokenManager` (client_id + secret → cached JWT, refreshed on 401, reused across all sessions on a worker). LLM is currently routed to Groq while Nusuk `/chat/stream` is broken upstream; Nusuk credentials remain in `.env` so swapping back is one line.
 
-| Service | Endpoint | Protocol |
-|---|---|---|
-| STT | `POST /transcribe` | multipart WAV (16 kHz) → `{transcription_text, language}` |
-| LLM | `POST /chat/stream` | JSON `{query, session_id, mode, ...}` → SSE `{delta}` |
-| TTS | `POST /synthesize` | JSON `{text}` → WAV (24 kHz) |
+| Service | Endpoint | Protocol | Auth |
+|---|---|---|---|
+| STT | Nusuk `POST /transcribe` | multipart WAV (16 kHz) → `{transcription_text, language}` | shared NusukTokenManager |
+| LLM | Groq `POST /openai/v1/chat/completions` (model `openai/gpt-oss-120b`, `reasoning_effort=low`) | OpenAI-compatible SSE stream | `GROQ_API_KEY` static bearer |
+| TTS | Nusuk `POST /synthesize` | JSON `{text}` → WAV (24 kHz, chunked transfer; PCM streamed to LiveKit as it arrives) | shared NusukTokenManager |
 
 ## Key Design Decisions
 
-- Turn detection is **always on** (`MultilingualModel` when installed, VAD-only fallback)
+- Turn detection is **always on** (`MultilingualModel` when installed, VAD-only fallback for unsupported languages e.g. Arabic)
+- `preemptive_tts=True` — TTS speculatively fires during the endpointing-delay window; cancelled if the user keeps talking
 - TTS input is stripped of markdown before synthesis (LLM responses contain `**bold**`, `[1]` citations)
-- Nusuk does not accept a system prompt; a `CUSTOM_LLM_QUERY_PREFIX` is prepended to every user query instead
-- Room I/O defaults (16 kHz mono, 50 ms frames, pre-connect audio) are **hard-coded** in `agent.py` — not env-configurable
-- All three HTTP clients (`STT`, `LLM`, `TTS`) are closed on session teardown regardless of error path
+- TTS streams PCM to LiveKit chunk-by-chunk as bytes arrive from `/synthesize` (per-sentence audio flushed before later sentences finish rendering)
+- One `httpx.AsyncClient(http2=True)` is built in `prewarm()` and shared across STT / LLM / TTS / Nusuk auth — process-scoped, reused across all sessions on the worker
+- Room I/O defaults (16 kHz mono input, `tts_settings.sample_rate` output, 50 ms frames, pre-connect audio) are **hard-coded** in `agent.py` — not env-configurable
+- Long system prompts can be loaded from disk via `AGENT_SYSTEM_PROMPT_FILE` (current deployment uses a `RAG_VOICE` prompt at `/app/system_prompt_rag.txt`)
+- Per-turn metrics (`agent_turn_e2e_latency_seconds`, etc.) are walked from `session.history` `ChatMessage.metrics` at session end into multiproc-safe Prometheus histograms
 
 ## Related Docs
 

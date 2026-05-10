@@ -23,9 +23,10 @@ Browser (WebRTC)
 │       (livekit-agents SDK)      │
 │                                 │
 │  VAD (Silero, preloaded)        │
-│  STT adapter  ──► ASR service   │
-│  LLM adapter  ──► Nusuk API     │
-│  TTS adapter  ──► TTS service   │
+│  STT adapter  ──► Nusuk /transcribe (shared NusukTokenManager)
+│  LLM adapter  ──► Groq /chat/completions (gpt-oss-120b, OpenAI-compat) │
+│  TTS adapter  ──► Nusuk /synthesize  (streaming PCM)                   │
+│  Shared httpx.AsyncClient(http2=True) — one per worker                 │
 └─────────────────────────────────┘
 
 ┌─────────────────────────────────┐
@@ -62,16 +63,17 @@ Browser (WebRTC)
       → Agent sends greeting audio via TTS
       → AgentSession starts listening for user audio
 
-4.  User speaks  →  VAD segments audio  →  STT adapter sends WAV to ASR
-      → ASR returns transcript
+4.  User speaks  →  VAD segments audio  →  STT adapter posts WAV to Nusuk /transcribe
+      → returns {transcription_text, language}
 
-5.  Transcript → LLM adapter (Nusuk /chat/stream)
-      → SSE tokens stream back
-      → AgentSession buffers by sentence
+5.  Transcript → LLM adapter (Groq /chat/completions, OpenAI-compat SSE)
+      → SSE tokens stream back; reasoning fields ignored, legacy <think> blocks stripped
+      → AgentSession buffers by sentence (.,،,؟,!,\n)
       → Each complete sentence triggers TTS immediately
+      → preemptive_tts=True also fires speculative TTS during endpointing window
 
-6.  TTS adapter posts text to TTS service
-      → Receives WAV → strips WAV header → pushes PCM frames to AgentSession
+6.  TTS adapter posts text to Nusuk /synthesize
+      → streams WAV (chunked) → parses RIFF header from prefix → pushes PCM frames as they arrive
       → AgentSession publishes frames to LiveKit room
       → Browser receives and plays audio
 ```
@@ -109,14 +111,14 @@ token-server
 redis
 demo-frontend (optional)
 
-External (Nusuk — https://dev.nusukai.com)
+External
 ───────────────────────────────────────────
-STT   POST /transcribe
-LLM   POST /chat/stream
-TTS   POST /synthesize
+STT   Nusuk https://dev.nusukai.com   POST /transcribe
+LLM   Groq  https://api.groq.com/openai/v1   POST /chat/completions  (gpt-oss-120b)
+TTS   Nusuk https://dev.nusukai.com   POST /synthesize
 ```
 
-All AI inference is handled by the Nusuk external API. No GPU machine is needed in this repo. See [troubleshooting.md](troubleshooting.md#livekit-public-ip) for the public IP requirement.
+All model inference is handled by external APIs. No GPU machine is needed in this repo. See [troubleshooting.md](troubleshooting.md#livekit-public-ip) for the public IP requirement.
 
 ## GKE Sizing (Middle East Regions)
 

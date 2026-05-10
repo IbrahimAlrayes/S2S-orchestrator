@@ -2,10 +2,13 @@
 
 ## `agent/metrics.py`
 
-Module-level Prometheus metric objects imported by the plugin files. Call `metrics.start_server(port)` once per worker process (done in `prewarm()`).
+Module-level Prometheus metric objects imported by the plugin files. Call `metrics.start_server(port)` once per worker process (done in `prewarm()`). Five inline `agent_*` metrics record per-HTTP-request stage timings; five `agent_turn_*` histograms record per-turn metrics walked from `ChatMessage.metrics` at session end.
 
 ### `start_server(port)`
-Calls `prometheus_client.start_http_server(port)`. Wraps the bind in `try/except OSError` — safe to call in forked worker processes; the second caller silently skips if the port is already bound. Exposes `/metrics` at the given port.
+Starts the Prometheus HTTP exporter. When `PROMETHEUS_MULTIPROC_DIR` is set (production), creates the dir, builds a `CollectorRegistry`, registers a `MultiProcessCollector(registry)` on it, and serves that registry — every forked worker writes counter / histogram / gauge values to shared memory-mapped files in the multiproc dir, and the bound HTTP server aggregates them on scrape. When the env is unset, falls back to the in-process default registry. Wraps the bind in `try/except OSError` so workers that lose the port-9090 race silently skip — with multiproc enabled the bound worker still aggregates everyone's samples.
+
+### `record_turn_metrics(history) → None`
+Called once at session end from the `entrypoint` `finally` block. Walks `session.history.messages()` and reads each `ChatMessage.metrics` (a `MetricsReport` TypedDict the SDK populates as turns happen). User messages carry `transcription_delay` and `end_of_turn_delay`; assistant messages carry `e2e_latency`, `llm_node_ttft`, `tts_node_ttfb`. Each present field is observed into its corresponding `agent_turn_*` histogram. Returns silently if `history.messages()` raises (e.g., session torn down before any turns completed).
 
 ---
 
@@ -13,9 +16,10 @@ Calls `prometheus_client.start_http_server(port)`. Wraps the bind in `try/except
 
 ### `prewarm(proc)`
 Called once per worker process before any jobs are dispatched. Must be sync — the livekit-agents SDK invokes it from a sync context; an `async def` coroutine would be returned un-awaited and silently dropped. Steps in order:
-1. Starts the Prometheus HTTP server on `AGENT_METRICS_PORT` (default 9090) via `metrics.start_server()`.
+1. Starts the Prometheus HTTP server on `AGENT_METRICS_PORT` (default 9090) via `metrics.start_server()` (with `MultiProcessCollector` registry when `PROMETHEUS_MULTIPROC_DIR` is set).
 2. Loads Silero VAD into `proc.userdata["vad"]` — shared by all sessions in this worker.
-3. If `CUSTOM_LLM_PROVIDER=nusuk` and `client_id` + `client_secret` are set: creates a `NusukTokenManager`, pre-fetches the JWT via `asyncio.run(token_manager.get_token())`, and stores it in `proc.userdata["nusuk_token_manager"]`. All sessions on this worker share the token manager, so the first turn of every room skips the auth roundtrip.
+3. Builds one `httpx.AsyncClient(http2=True, max_keepalive_connections=20, keepalive_expiry=120s)` and stores it in `proc.userdata["http_client"]`. Reused by STT, LLM, TTS, and the Nusuk token manager so the worker keeps a single warm TCP+TLS connection to `dev.nusukai.com` instead of opening three.
+4. If **any** of `CUSTOM_STT_PROVIDER` / `CUSTOM_LLM_PROVIDER` / `CUSTOM_TTS_PROVIDER` is `nusuk` and `client_id` + `client_secret` are set: creates a `NusukTokenManager` (using the shared `http_client`), pre-fetches the JWT via `asyncio.run(token_manager.get_token())`, and stores it in `proc.userdata["nusuk_token_manager"]`. All sessions on this worker share the token manager, so the first turn of every room skips the auth roundtrip. Gating on **any** (not just LLM) was added when LLM moved to Groq while STT/TTS stayed on Nusuk — gating only on LLM left STT/TTS unauthenticated.
 
 ### `_build_room_options(agent_settings, tts_settings) → room_io.RoomOptions`
 Constructs the `RoomOptions` passed to `session.start()`. Hard-codes audio input to 16 kHz mono 50 ms frames with pre-connect audio enabled (3 s timeout). 16 kHz matches Silero VAD's native rate and the ASR target rate — the `rtc.AudioResampler` in `custom_stt.py` becomes a no-op on the hot path. Audio output sample rate and channels are taken from `tts_settings` so they match what the TTS adapter produces. Text input is disabled (voice-only).

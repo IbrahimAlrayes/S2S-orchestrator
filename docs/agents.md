@@ -11,20 +11,31 @@ Each incoming room job spawns a new Python worker process (forked from the pre-w
 ```
 1. prewarm()     — sync, called once per worker process at startup
                    a. starts Prometheus metrics HTTP server (AGENT_METRICS_PORT, default 9090)
+                      with MultiProcessCollector registry (PROMETHEUS_MULTIPROC_DIR)
                    b. loads Silero VAD model into proc.userdata["vad"]
-                   c. if provider=nusuk + client_id+secret set:
+                   c. builds httpx.AsyncClient(http2=True, max_keepalive=20, keepalive_expiry=120s)
+                      → proc.userdata["http_client"] — shared by STT, LLM, TTS, Nusuk auth
+                   d. if any of STT/LLM/TTS provider == "nusuk" + client_id+secret set:
                         fetches Nusuk JWT into proc.userdata["nusuk_token_manager"]
                         (shared token manager — all sessions on this worker reuse it)
 
 2. entrypoint()  — called per room job
    a. ctx.connect()                 — join the LiveKit room
    b. ACTIVE_SESSIONS.inc()         — Prometheus gauge
-   c. Build adapters                — STTAdapter, CustomLLM (with pre-warmed token_manager), CustomTTS
+   c. Build adapters                — STTAdapter, CustomLLM, CustomTTS
+                                      (all three accept the shared http_client + token_manager
+                                       from proc.userdata)
    d. Build AgentSession            — wires STT/LLM/TTS/VAD/turn detection
+                                      turn_handling={"preemptive_generation": {"preemptive_tts": True}}
    e. session.start()               — attaches to room, begins listening
    f. Agent sends greeting via TTS
    g. await disconnected.wait()     — hold until user leaves
-   h. finally: ACTIVE_SESSIONS.dec() + aclose all adapters
+   h. finally:
+      • metrics.record_turn_metrics(session.history)
+        (walks ChatMessage.metrics → agent_turn_* histograms)
+      • ACTIVE_SESSIONS.dec()
+      • aclose all adapters (only adapters with _owns_client=True actually close;
+        the shared client lives the worker process lifetime)
 ```
 
 ## Two Operating Modes
@@ -138,17 +149,24 @@ server.load_fnc = lambda s: min(len(s.active_jobs) / _MAX_JOBS_PER_WORKER, 1.0)
 
 `agent/metrics.py` exposes the following metrics at `http://<agent>:$AGENT_METRICS_PORT/metrics` (default 9090):
 
-| Metric | Type | Description |
-|---|---|---|
-| `agent_active_sessions_total` | Gauge | Currently active sessions |
-| `agent_stt_duration_seconds` | Histogram | STT HTTP wall time |
-| `agent_stt_errors_total` | Counter | STT failures |
-| `agent_llm_ttft_seconds` | Histogram | LLM time-to-first-token |
-| `agent_llm_duration_seconds` | Histogram | LLM total stream duration |
-| `agent_llm_errors_total` | Counter | LLM failures (labelled by provider) |
-| `agent_tts_duration_seconds` | Histogram | TTS synthesis wall time |
-| `agent_tts_errors_total` | Counter | TTS failures |
+| Metric | Type | Source | Description |
+|---|---|---|---|
+| `agent_active_sessions_total` | Gauge (`livesum`) | inline | Currently active sessions across workers |
+| `agent_stt_duration_seconds` | Histogram | inline | STT HTTP wall time |
+| `agent_stt_errors_total` | Counter | inline | STT failures |
+| `agent_llm_ttft_seconds` | Histogram | inline | LLM time-to-first-token |
+| `agent_llm_duration_seconds` | Histogram | inline | LLM total stream duration |
+| `agent_llm_errors_total` | Counter (label: provider) | inline | LLM failures |
+| `agent_tts_duration_seconds` | Histogram | inline | TTS synthesis wall time (full body) |
+| `agent_tts_errors_total` | Counter | inline | TTS failures |
+| `agent_turn_e2e_latency_seconds` | Histogram | `ChatMessage.metrics` (session end) | End of user speech → first agent response |
+| `agent_turn_llm_node_ttft_seconds` | Histogram | `ChatMessage.metrics` | LLM node TTFT (post turn-confirmation) |
+| `agent_turn_tts_node_ttfb_seconds` | Histogram | `ChatMessage.metrics` | TTS node time-to-first-byte |
+| `agent_turn_transcription_delay_seconds` | Histogram | `ChatMessage.metrics` | End of speech → final transcript |
+| `agent_turn_end_of_turn_delay_seconds` | Histogram | `ChatMessage.metrics` | End of speech → turn-end decision |
 
-The metrics server starts in `prewarm()` — one per worker process, with a silent fallback if the port is already bound by another worker in the same container. For multi-process accuracy in production, configure `PROMETHEUS_MULTIPROC_DIR` and use `MultiProcessCollector`.
+The metrics server starts in `prewarm()`. `PROMETHEUS_MULTIPROC_DIR` is **required** in production: workers fork and only one wins the port-9090 bind, so `MultiProcessCollector` aggregates samples written by every worker into shared memory-mapped files. `multiprocess_mode="livesum"` on `agent_active_sessions_total` aggregates only across live workers.
 
-See [observability.md](observability.md) for the Prometheus+Grafana setup.
+`agent_turn_*` metrics are populated at session end by `record_turn_metrics(session.history)` — same data the SDK exports via OTel `lk.agents.turn.*`, but routed through our multiproc-safe Prometheus registry instead of the OTel→Prom bridge (the OTel exporter is not multi-process-aware).
+
+See [observability.md](observability.md) for the Prometheus+Grafana setup and the rationale for not using the OTel bridge.

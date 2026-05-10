@@ -44,11 +44,15 @@ When the LLM streams tokens, `AgentSession` accumulates them into a buffer. When
 
 Sentence boundaries detected: `.`, `،`, `؟`, `!`, newline. **The LLM must emit proper punctuation for this to work.**
 
+### Pre-emptive TTS
+
+`turn_handling={"preemptive_generation": {"preemptive_tts": True}}` — the SDK already runs the LLM speculatively during the endpointing-delay window (default behaviour); flipping `preemptive_tts` makes TTS also fire as soon as sentence 1 of the speculative LLM stream is ready. If the user keeps talking (false turn-end), the in-flight LLM+TTS calls are cancelled. Capped at `max_retries=3` per turn. Mitigates VAD endpointing delay on confidently-detected short turns.
+
 ### Turn Detection
 
 `AgentSession` integrates `MultilingualModel` for semantic end-of-turn detection. If not installed or if the language is unsupported (e.g., Arabic), it falls back to VAD-based silence detection using `min_endpointing_delay` and `max_endpointing_delay`.
 
-VAD overhead on post-speech turns (measured): +0.5s to +3s depending on audio content and silence length.
+VAD overhead on post-speech turns (measured): +0.5s to +3s depending on audio content and silence length — partially offset by pre-emptive TTS.
 
 ## `stt.StreamAdapter`
 
@@ -181,7 +185,9 @@ The Next.js demo token route (`/api/token`) does the same thing with the TypeScr
 | `proc.userdata` for cross-session state | prewarm + entrypoint | Holds VAD instance, shared `httpx.AsyncClient`, `NusukTokenManager` — sessions on the same worker reuse them |
 | `stt.StreamAdapter(stt=..., vad=...)` | entrypoint | Wraps non-streaming STT with VAD-segmented streaming interface |
 | Sentence-buffered LLM → TTS | AgentSession default | TTS for sentence 1 fires before LLM finishes streaming sentence 2 |
-| Pre-emptive generation (LLM) | AgentSession default | Logs `using preemptive generation` — LLM kicks off before turn-end is fully confirmed |
+| Pre-emptive generation (LLM + TTS) | `turn_handling={"preemptive_generation": {"preemptive_tts": True}}` in entrypoint | LLM kicks off before turn-end is fully confirmed; TTS also fires speculatively on sentence 1 of the speculative LLM stream |
+| `record_turn_metrics(session.history)` (per-turn metrics) | [agent/metrics.py](../agent/metrics.py) + entrypoint `finally` | Walks `ChatMessage.metrics` into 5 multiproc-safe Prometheus histograms (e2e, llm_ttft, tts_ttfb, transcription_delay, end_of_turn_delay) |
+| Streaming TTS via `httpx.stream` | [agent/plugins/custom_tts.py](../agent/plugins/custom_tts.py) | PCM pushed to `output_emitter` chunk-by-chunk as bytes arrive instead of awaiting full WAV body — ~360 ms TTFA savings per sentence |
 | `MultilingualModel` turn detector | entrypoint (optional dep) | Semantic end-of-turn; falls back to VAD when language is unsupported (e.g. `ar`) |
 | Prometheus multiprocess metrics | [agent/metrics.py](../agent/metrics.py) | `MultiProcessCollector` aggregates samples from all forked workers — see `docs/observability.md` |
 | Hard-coded 16 kHz mono input | `_build_room_options` | Matches Silero VAD native rate + Nusuk ASR target → no resample on hot path |
@@ -194,8 +200,6 @@ Surveyed `/usr/local/lib/python3.11/site-packages/livekit/agents/` 2026-05-07. T
 
 | Feature | Source | Benefit | Effort | Caveat |
 |---|---|---|---|---|
-| **Pre-emptive TTS** | `voice/agent_session.py` `PreemptiveGenerationOptions(preemptive_tts=True)` | Speculative TTS during turn-end ambiguity → ~500–1000 ms TTFA on short turns | S | Wastes TTS calls if speculation is wrong; capped by `max_retries` |
-| **OTel native metrics** | `telemetry/otel_metrics.py` | Pre-built histograms for LLM TTFT, TTS TTFB, transcription delay, connection-acquire — drop-in replacement for parts of our custom Prometheus | S | Coexists with our Prom; consider exporting both, or migrate gradually |
 | **`utils.connection_pool.ConnectionPool`** | `utils/connection_pool.py` | Generic pool primitive (not just HTTP) with `prewarm`, `max_session_duration`, background recycling | S | Useful if we ever switch STT/TTS to WebSocket — pool socket sessions across turns |
 
 ### Medium ROI
@@ -219,9 +223,11 @@ Surveyed `/usr/local/lib/python3.11/site-packages/livekit/agents/` 2026-05-07. T
 
 ### Top 3 to Do Next
 
-1. **Pre-emptive TTS** — flip `preemptive_tts=True` in AgentSession config. Free TTFA win, no architecture change.
-2. **OTel metrics** — already have a Prometheus dashboard; OTel histograms would add `connection_reused`, `transcription_delay`, and per-turn E2E timing without us writing the code.
-3. **STT/TTS FallbackAdapter** — only worth it once we have a second backend (e.g. fallback to a local Whisper or Edge-TTS). Architecturally important for production uptime.
+Both originally-#1 (pre-emptive TTS) and originally-#2 (per-turn metrics, equivalent to OTel histograms) have shipped — see "SDK Features We Already Use". Remaining priorities:
+
+1. **STT/TTS FallbackAdapter** — only worth it once we have a second backend (e.g. fallback to a local Whisper or Edge-TTS). Architecturally important for production uptime.
+2. **Adaptive interruption detector** — replaces VAD-only interrupt detection. Reduces false interrupts when user makes backchannel sounds ("uh-huh", "نعم"). `turn_handling.interruption.mode="adaptive"`.
+3. **`utils.connection_pool.ConnectionPool`** — relevant once any backend moves to WebSocket; not needed while everything is HTTP/2 over the shared httpx client.
 
 ## Room Events Used
 

@@ -176,7 +176,7 @@ extra_hosts:
 
 1. **VAD endpointing delay compounding**: Check `AGENT_MIN_ENDPOINTING_DELAY` and `AGENT_MAX_ENDPOINTING_DELAY`. The defaults (0.5 s / 5.0 s) add silence-detection overhead.
 2. **LLM session context growing**: Nusuk's `/chat/stream` uses `session_id` to track conversation history on its side. Longer history may increase LLM response time.
-3. **httpx connection not reused**: Each adapter creates one `httpx.AsyncClient` per session and reuses it for the lifetime of the room — this is correct. If you see TCP connection setup time in logs, check the TLS/HTTP2 config.
+3. **httpx connection not reused**: STT, LLM, TTS, and the Nusuk token manager all share **one** `httpx.AsyncClient(http2=True)` built in `prewarm()` and stored in `proc.userdata["http_client"]`. The client lives for the worker process lifetime, not the session — no TCP/TLS re-handshake between turns or between sessions on the same worker. If you see fresh handshake time, check that `entrypoint` actually picked it up via `ctx.proc.userdata.get("http_client")` and passed it to each adapter constructor (otherwise each adapter falls back to creating its own and `_owns_client=True`).
 
 ---
 

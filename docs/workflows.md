@@ -22,22 +22,25 @@ AgentSession receives final transcript
     │  Turn detection: MultilingualModel predicts utterance complete
     │  (or silence timer fires if MultilingualModel not installed)
     ▼
-CustomLLMStream._run_nusuk()
-    │  → prepend CUSTOM_LLM_QUERY_PREFIX to query
-    │  → POST /chat/stream (SSE, Bearer JWT from NusukTokenManager)
-    │  ← SSE stream of {delta: "token"} events
+CustomLLMStream._run_openai()  (current — Groq backend)
+    │  → POST https://api.groq.com/openai/v1/chat/completions
+    │     model=openai/gpt-oss-120b, reasoning_effort=low, max_completion_tokens=768
+    │  ← SSE stream of {choices: [{delta: {content: "token"}}]} events
+    │     reasoning fields ignored; legacy <think> blocks stripped via ReasoningStreamFilter
     │
     │  AgentSession sentence buffering:
-    │  accumulates tokens until sentence boundary (. ، ؟ !)
+    │  accumulates tokens until sentence boundary (. ، ؟ ! \n)
     │  → fires TTS for sentence 1 while LLM still streams sentence 2
+    │  → preemptive_tts=True also fires speculative TTS during endpointing window
     │
     ▼
 CustomTTSChunkedStream._run()
     │  → _strip_markdown() on the sentence text
-    │  → POST https://dev.nusukai.com/synthesize body {"text": "..."}  (Bearer JWT)
-    │  ← WAV bytes (24 kHz)
-    │  → _decode_wav(): extract PCM, sample_rate, channels
-    │  → output_emitter.initialize() + output_emitter.push(pcm)
+    │  → httpx.stream("POST", https://dev.nusukai.com/synthesize, json={"text": "..."})
+    │     (Bearer JWT from shared NusukTokenManager)
+    │  ← WAV bytes (24 kHz, chunked transfer)
+    │  → _parse_wav_header() walks RIFF/fmt /data on the prefix buffer
+    │  → output_emitter.initialize(...) + output_emitter.push(pcm) per chunk as it arrives
     ▼
 AgentSession publishes PCM frames to LiveKit room
     │
@@ -49,8 +52,10 @@ Browser plays audio
 ### Key latency points
 - **TTFA (Time to First Audio)** — from end of user speech to first TTS audio playing
 - Sentence buffering means TTS for sentence 1 starts before LLM finishes the full response
-- The LLM must emit proper punctuation (`.`, `،`, `؟`, `!`) for sentence buffering to fire
-- `CUSTOM_LLM_QUERY_PREFIX` instructs Nusuk to use short sentences with punctuation
+- The LLM must emit proper punctuation (`.`, `،`, `؟`, `!`, newline) for sentence buffering to fire
+- The system prompt (loaded from `AGENT_SYSTEM_PROMPT_FILE`, currently RAG_VOICE) instructs short sentences with punctuation
+- TTS streams PCM as bytes arrive — first audio reaches the room before the full WAV body is received
+- Primary remaining latency is **STT WAN round-trip** (~1 s of ~1.5 s STT wall time) — Nusuk hosted on Google Cloud, Belgium
 
 ---
 
@@ -202,9 +207,13 @@ AgentServer registers worker with LiveKit server
     │  → WebSocket connection to LiveKit for job dispatch
     ▼
 prewarm() called once (sync)
-    │  → metrics.start_server(AGENT_METRICS_PORT)
+    │  → metrics.start_server(AGENT_METRICS_PORT) — registers MultiProcessCollector
+    │     so all forked workers' samples aggregate via PROMETHEUS_MULTIPROC_DIR
     │  → silero.VAD.load(activation_threshold=...) → proc.userdata["vad"]
-    │  → (if nusuk + client_id/secret) NusukTokenManager + asyncio.run(JWT prefetch)
+    │  → httpx.AsyncClient(http2=True, max_keepalive=20, keepalive_expiry=120s)
+    │     → proc.userdata["http_client"]  (shared by STT, LLM, TTS, Nusuk auth)
+    │  → (if any of STT/LLM/TTS provider == "nusuk" + client_id/secret)
+    │     NusukTokenManager + asyncio.run(JWT prefetch)
     │     → proc.userdata["nusuk_token_manager"]
     ▼
 Worker idle — waiting for job assignments
@@ -232,10 +241,10 @@ Worker returns to idle pool
       → agent joins LiveKit room as kind=4 (agent participant)
       → remote participants already present are visible
 
-2. Build adapters
-      → CustomSTTAdapter(stt_settings)       — httpx client, provider key
-      → CustomLLM(llm_settings, ...)         — httpx client, token manager if nusuk
-      → CustomTTS(tts_settings)              — httpx client
+2. Build adapters (all three reuse the worker-shared httpx client + token manager from proc.userdata)
+      → CustomSTTAdapter(stt_settings, token_manager=..., client=shared_client)
+      → CustomLLM(llm_settings, ..., token_manager=..., client=shared_client)
+      → CustomTTS(tts_settings, token_manager=..., client=shared_client)
 
 3. (If explicit_eos_mode) → _run_explicit_eos_mode() → return
 
@@ -256,5 +265,9 @@ Worker returns to idle pool
 9. await disconnected.wait()
       → hold until user leaves room
 
-10. finally: streaming_stt.aclose() + _aclose_providers(...)
+10. finally:
+    → metrics.record_turn_metrics(session.history)
+       (walks ChatMessage.metrics → 5 agent_turn_* histograms)
+    → streaming_stt.aclose()
+    → _aclose_providers(...)  (only adapters with _owns_client=True actually close)
 ```
