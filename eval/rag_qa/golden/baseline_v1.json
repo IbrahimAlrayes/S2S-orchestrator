@@ -1,0 +1,45 @@
+{
+  "$schema": "internal://golden-baseline/v1",
+  "name": "golden_v1",
+  "recorded_at": "2026-05-12T00:00:00Z",
+  "source_run": "pilot100_v4",
+  "prompt_version": "v4-2026-05-12",
+  "prompt_hash": "sha256:0da47283a405de98",
+  "model": "openai/gpt-oss-120b",
+  "n": 100,
+  "alignment": {
+    "all_passed": 100,
+    "exceeds_sentence_limit": 0,
+    "has_markdown": 0,
+    "has_url": 0,
+    "has_service_id": 0,
+    "language_mismatch": 0,
+    "ungrounded_when_empty": 0
+  },
+  "judge": {
+    "mean": 3.86,
+    "pass_count": 72,
+    "partial_count": 8,
+    "fail_count": 20,
+    "score_distribution": {
+      "0": 1,
+      "1": 9,
+      "2": 10,
+      "3": 8,
+      "4": 27,
+      "5": 45
+    },
+    "hallucinations": 5,
+    "contradictions": 10,
+    "language_mismatches": 0
+  },
+  "regression_thresholds": {
+    "alignment_all_passed_min": 98,
+    "judge_mean_min": 3.7,
+    "judge_pass_min": 65,
+    "judge_score_zero_max": 2,
+    "hallucinations_max": 12,
+    "contradictions_max": 15
+  },
+  "notes": "Baseline derived from pilot100_v4 (Claude Sonnet 4.6 High judge). Thresholds set with ~10% headroom below observed values so normal noise does not trip CI; tighten as the agent improves."
+}

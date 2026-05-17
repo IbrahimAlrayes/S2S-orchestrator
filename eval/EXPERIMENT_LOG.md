@@ -175,3 +175,54 @@ This was later removed from the checked-in demo code. The current repo state kee
 
 - Capture round-trip latency on `on` vs `off` during the next live run and append numbers here.
 - Revisit the short-fuse preset values once the semantic turn-detection experiment lands.
+
+## 2026-05-10 — Direct pipeline baseline on current Groq + Nusuk config
+
+### Question
+
+What is the per-stage and end-to-end latency of the direct pipeline (no LiveKit, no VAD, no agent process) against the production endpoints we use today: Nusuk for STT/TTS and Groq for LLM?
+
+### Method
+
+- New script `eval/quick_speed.py` — replaces `eval/run_pipeline_eval.py` for this run because the older script is hardcoded for the `local_api` flavor (`/api/transcribe/`, static bearer) and doesn't speak Nusuk's JWT or the Groq OpenAI-compat path.
+- Hits the same URLs and auth the agent uses: Nusuk JWT (`POST /transcribe`, `POST /synthesize`) and Groq Bearer (`POST /chat/completions` with `stream=true`, `reasoning_effort=low`, system prompt loaded from `agent/system_prompt_rag.txt`, query prefix from `CUSTOM_LLM_QUERY_PREFIX`).
+- Streams the LLM and TTS responses to capture TTFT and TTFA — the metrics that matter for perceived responsiveness.
+- Run from the Mac host (Saudi Arabia → Nusuk dev in Belgium, ~117 ms RTT).
+
+### Dataset
+
+20 Arabic clips from `eval/testdata/chunk_0000.wav` … `chunk_0019.wav`. Audio durations 1.23s – 19.38s.
+
+### Aggregate per-stage results
+
+| Stage | min | p50 | mean | max |
+|---|---:|---:|---:|---:|
+| STT (full WAV → transcript) | `0.367s` | `0.546s` | `0.583s` | `1.047s` |
+| LLM TTFT (Groq, `gpt-oss-120b`) | `0.196s` | `0.231s` | `0.250s` | `0.375s` |
+| LLM full reply | `0.264s` | `0.308s` | `0.324s` | `0.457s` |
+| TTS TTFA (first PCM chunk) | `0.194s` | `0.206s` | `0.209s` | `0.238s` |
+| TTS full audio body | `0.961s` | `1.097s` | `1.142s` | `1.404s` |
+| **E2E first audio** (STT + LLM-TTFT + TTS-TTFA) | `0.814s` | `0.990s` | `1.043s` | `1.546s` |
+| E2E total (STT + LLM-total + TTS-total) | `1.669s` | `1.985s` | `2.050s` | `2.807s` |
+
+### Observations
+
+- **Cold-start STT**: `chunk_0000.wav` paid `1.047s` on STT vs ~`0.55s` for every subsequent clip on the same connection. The first call eats the TLS handshake + initial connection setup; httpx keepalive amortizes the rest. The agent's prewarm prefetch already heats this connection, so a real LiveKit session shouldn't pay it on turn 1.
+- **Streaming TTS pays off cleanly**: TTFA is ~`210 ms` regardless of reply length (TTS body ranges 285–525 KB, full audio takes ~1.1s). The agent pipes chunks straight to LiveKit as they arrive — it does not wait for the full body.
+- **LLM is the cheapest stage**: Groq + `reasoning_effort=low` keeps TTFT under `0.25s` p50. The `<think>` reasoning trace is collapsed and never reaches TTS.
+- **Versus handoff expectations** (handoff cited TTFA `2.5–3.5s`, STT `~1.5s`): direct-pipeline numbers are well below those, because the handoff numbers reflect *in-session* TTFA, which adds VAD endpointing (`0.5–1s`) + LiveKit signaling/jitter buffer (`~0.3s`) on top of these direct measurements.
+
+### Takeaway
+
+The HTTP pipeline (STT + LLM + TTS) is not the bottleneck for in-session TTFA. The dominant non-network cost remains VAD endpointing. To attack perceived latency, the priority is endpointing tuning (revisit `min_endpointing_delay`, semantic turn detection) — not STT/LLM/TTS optimization.
+
+### Caveats
+
+- Direct HTTP, no agent process — bypasses VAD, STT streaming wrapper, sentence buffering, preemptive TTS, and the LiveKit SFU.
+- Mac host with home internet; results from a server in EU/ME may differ.
+- Single sequential run, no warmup pass discarded — the first-call STT outlier is real but biases the means slightly upward.
+
+### Next
+
+- Pair this baseline with a fresh LiveKit-mode run via `eval/compare.py` once `compare.py` is updated to also speak Nusuk JWT (it currently has the same `local_api` assumption as `run_pipeline_eval.py`).
+- Re-run after each endpointing-tuning change and append a new dated section here.
