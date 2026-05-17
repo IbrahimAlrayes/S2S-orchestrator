@@ -236,7 +236,7 @@ def _strip_markdown(text: str) -> str:
     import re
     text = re.sub(r'\*+([^*\n]+)\*+', r'\1', text)   # **bold** / *italic*
     text = re.sub(r'^\s*>+\s*', '', text, flags=re.MULTILINE)  # > blockquotes
-    text = re.sub(r'\[\d+\]', '', text)               # [4] citation markers
+    text = re.sub(r'\[[^\]]*\]', '', text)            # [4] / [أ] / [ref:x] citation markers
     text = re.sub(r'\n{2,}', ' ', text)               # collapse paragraph breaks
     return text.strip()
 

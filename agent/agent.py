@@ -73,19 +73,48 @@ def prewarm(proc: agents.JobProcess) -> None:
         for s in (stt_settings, llm_settings, tts_settings)
     )
     if nusuk_in_use and llm_settings.client_id and llm_settings.client_secret:
+        base_url = (
+            llm_settings.url
+            if llm_settings.provider.strip().lower() == "nusuk"
+            else stt_settings.url
+        )
+
+        # Long-lived manager bound to the SHARED client. Its httpx connections
+        # are created lazily on first use — i.e. inside the worker's job loop,
+        # not here. Sharing a connection across event loops corrupts the pool.
         token_manager = NusukTokenManager(
-            base_url=llm_settings.url if llm_settings.provider.strip().lower() == "nusuk" else stt_settings.url,
+            base_url=base_url,
             client_id=llm_settings.client_id,
             client_secret=llm_settings.client_secret,
             user_id=llm_settings.auth_user_id,
             client=shared_http_client,
         )
+        proc.userdata["nusuk_token_manager"] = token_manager
+
+        # Prefetch the JWT in a throwaway loop with a throwaway client so the
+        # first job skips the auth RTT. Connections opened in this temp loop
+        # die with it (`async with` aclose), so nothing leaks into the shared
+        # client.
+        async def _prefetch() -> tuple[str, float]:
+            async with httpx.AsyncClient(timeout=10.0, http2=True) as ephemeral:
+                tmp = NusukTokenManager(
+                    base_url=base_url,
+                    client_id=llm_settings.client_id,
+                    client_secret=llm_settings.client_secret,
+                    user_id=llm_settings.auth_user_id,
+                    client=ephemeral,
+                )
+                await tmp.get_token()
+                assert tmp._token is not None
+                return tmp._token, tmp._expires_at
+
         try:
-            asyncio.run(token_manager.get_token())
-            logger.info("prewarm nusuk_token_prefetched")
+            seeded_token, seeded_expiry = asyncio.run(_prefetch())
         except Exception:
             logger.warning("prewarm nusuk_token_prefetch_failed", exc_info=True)
-        proc.userdata["nusuk_token_manager"] = token_manager
+        else:
+            token_manager.seed_cache(seeded_token, seeded_expiry)
+            logger.info("prewarm nusuk_token_prefetched")
 
 
 server.setup_fnc = prewarm

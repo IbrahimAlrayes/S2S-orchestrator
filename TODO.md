@@ -22,7 +22,13 @@
 ## Pending
 
 ### Latency
-- [ ] Run full 20-file eval benchmark (direct vs LiveKit) and record results in EXPERIMENT_LOG.md
+- [~] Run full 20-file eval benchmark (direct vs LiveKit) and record results in EXPERIMENT_LOG.md
+  - [x] Direct mode — recorded under "2026-05-10 — Direct pipeline baseline" via `eval/quick_speed.py`
+  - [ ] LiveKit mode — `eval/compare.py` still hardcoded for `local_api` flavor, needs Nusuk-JWT support before re-running
+- [ ] **In-cluster agent migration** — agent ships as part of Nusuk's voice API. Customer flow: `POST dev.nusukai.com/voice/session` → returns LiveKit Cloud URL + token → customer connects to LiveKit Cloud edge → agent (in nsk cluster) is dispatched. Predicted STT warm wall: 568 ms → ~110 ms. See `docs/in-cluster-migration.md`.
+- [ ] **LiveKit Cloud project setup** — create Nusuk project, capture URL + API key/secret, distribute to both `s2s-agent/agent-secret` and `nlp-rag/nlp-rag-app-secret`. See `docs/in-cluster-migration.md` §10.
+- [ ] **nlp-rag-app `/voice/session` endpoint** — coordinate with the nlp-rag-app team. Endpoint mints a LiveKit participant token + creates a `RoomConfiguration` with `agents: [{ agentName: "nusuk-agent" }]`. Uses `livekit-api` Python SDK. Auth via existing Nusuk JWT.
+- [ ] **Remove temp local-RAG provider** (`agent/plugins/rag/`, `CustomLLM._run_nusuk_rag`, `LLMSettings.rag_top_k`, `pymilvus` dep, RAG env vars) once Nusuk `/chat/stream` is fixed upstream. See `agent/plugins/rag/README.md` for the removal checklist.
 - [ ] Confirm Nusuk sentence boundaries trigger LiveKit sentence buffering correctly
 - [ ] Measure TTFA improvement after system prompt + markdown strip fix
 

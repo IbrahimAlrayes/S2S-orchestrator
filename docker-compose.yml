@@ -21,7 +21,7 @@ services:
       # Narrowed to match livekit.yaml port_range_end — binding the wider range
       # races with ephemeral UDP sockets and fails on busy hosts. Prefer
       # network_mode: host in production to avoid Docker port-map overhead.
-      - "50000-50100:50000-50100/udp"
+      - "30000-30100:30000-30100/udp"
     volumes:
       - ./livekit-server/livekit.yaml:/etc/livekit/livekit.yaml:ro
     healthcheck:
