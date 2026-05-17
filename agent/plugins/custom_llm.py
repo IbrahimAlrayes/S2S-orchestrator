@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import uuid
 from collections.abc import AsyncGenerator
@@ -109,18 +110,25 @@ class CustomLLMStream(llm.LLMStream):
         if self._provider._provider_key == "nusuk":
             await self._run_nusuk()
             return
+        if self._provider._provider_key == "nusuk_rag":
+            await self._run_nusuk_rag()
+            return
         await self._run_openai()
 
-    async def _run_openai(self) -> None:
-        messages, _ = self.chat_ctx.to_provider_format("openai")
-        if not any(message.get("role") == "system" for message in messages):
-            messages.insert(
-                0,
-                {
-                    "role": "system",
-                    "content": self._provider.agent_settings.system_prompt,
-                },
-            )
+    async def _run_openai(self, messages: list[dict] | None = None) -> None:
+        # `messages=` lets `_run_nusuk_rag` reuse this streaming loop after
+        # fusing RAG context into the system prompt. Default behavior is
+        # unchanged when called with no args.
+        if messages is None:
+            messages, _ = self.chat_ctx.to_provider_format("openai")
+            if not any(message.get("role") == "system" for message in messages):
+                messages.insert(
+                    0,
+                    {
+                        "role": "system",
+                        "content": self._provider.agent_settings.system_prompt,
+                    },
+                )
 
         payload = {
             "model": self._provider.settings.model,
@@ -243,6 +251,65 @@ class CustomLLMStream(llm.LLMStream):
         metrics.LLM_DURATION.observe(duration_s)
         logger.info("llm_done provider=%s duration_s=%.3f", provider_name, duration_s)
 
+    async def _run_nusuk_rag(self) -> None:
+        # TEMP provider — see agent/plugins/rag/README.md for removal steps.
+        # Path: pull the last user message, run local RAG (Milvus + reranker),
+        # fuse retrieved context into the system prompt Nusuk-style, then
+        # delegate to the existing OpenAI streaming loop (Groq backend).
+        from plugins.rag import retrieve as rag_retrieve
+        from prompts.voice_prompt import PROMPT_HASH, PROMPT_VERSION, RAG_VOICE_PROMPT
+
+        query = _latest_user_message(self.chat_ctx)
+        if not query:
+            await self._run_openai()
+            return
+
+        top_k = getattr(self._provider.settings, "rag_top_k", 12)
+        try:
+            hits = await rag_retrieve.retrieve(query, top_k=top_k)
+        except Exception:
+            logger.warning("nusuk_rag_retrieve_failed_falling_back_to_groq", exc_info=True)
+            hits = []
+
+        # Build messages with the voice prompt + appended context.
+        messages, _ = self.chat_ctx.to_provider_format("openai")
+        base_prompt = RAG_VOICE_PROMPT
+        if hits:
+            context_block = rag_retrieve.format_context_block(hits)
+            fused_system = (
+                f"{base_prompt}\n\n"
+                f"استخدم السياق التالي للإجابة عن سؤال المستخدم. السياق مرقَّم؛ "
+                f"لا تذكر أرقام المراجع في إجابتك.\n\n{context_block}"
+            )
+        else:
+            fused_system = base_prompt
+
+        lang = _query_language(query)
+        fused_system = fused_system + f"\n\nThe user's message is in {lang}. You MUST respond in {lang} only."
+
+        # Replace any existing system message (or insert one) with the fused version.
+        non_system = [m for m in messages if m.get("role") != "system"]
+        # Apply query_prefix to the last user message (format hint for LLM, not retrieval).
+        prefix = self._provider.settings.query_prefix
+        if prefix:
+            for i in range(len(non_system) - 1, -1, -1):
+                if non_system[i].get("role") == "user":
+                    content = _message_text(non_system[i].get("content", ""))
+                    non_system[i] = {**non_system[i], "content": f"{prefix.strip()} {content}"}
+                    break
+        messages = [{"role": "system", "content": fused_system}, *non_system]
+
+        logger.info(
+            "llm_start provider=nusuk_rag prompt_version=%s prompt_hash=%s "
+            "rag_hits=%d query_len=%d query_lang=%s",
+            PROMPT_VERSION,
+            PROMPT_HASH,
+            len(hits),
+            len(query),
+            lang,
+        )
+        await self._run_openai(messages=messages)
+
     async def _nusuk_headers(self) -> dict[str, str]:
         if self._provider.token_manager is not None:
             token = await self._provider.token_manager.get_token()
@@ -330,6 +397,13 @@ class ReasoningStreamFilter:
         delta = visible[self._visible_len :]
         self._visible_len = len(visible)
         return delta
+
+
+_ARABIC_RE = re.compile(r"[؀-ۿ]")
+
+
+def _query_language(text: str) -> str:
+    return "Arabic" if _ARABIC_RE.search(text) else "English"
 
 
 def _visible_text(text: str) -> str:

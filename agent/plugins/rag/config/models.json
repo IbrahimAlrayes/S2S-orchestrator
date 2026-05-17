@@ -1,0 +1,7 @@
+{
+  "RERANKER": {
+    "MODEL_NAME": "elm_rerank_32k_0.6b",
+    "MAX_RETRIES": 2,
+    "TIMEOUT": 15.0
+  }
+}

@@ -4,3 +4,7 @@ prometheus_client>=0.20,<1
 pydantic-settings>=2,<3
 python-dotenv>=1,<2
 
+# TEMP: required by agent/plugins/rag/ — delete with that subtree when
+# Nusuk /chat/stream is fixed upstream.
+pymilvus>=2.4,<3
+
