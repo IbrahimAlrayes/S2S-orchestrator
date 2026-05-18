@@ -6,8 +6,9 @@ Tools for benchmarking the S2S pipeline latency, both in isolation (direct API c
 
 | Script | Purpose |
 |--------|---------|
-| `run_pipeline_eval.py` | Direct STT → LLM → TTS API calls; saves audio artifacts |
-| `compare.py` | Side-by-side latency comparison: direct vs. LiveKit |
+| `quick_speed.py` | Per-stage latency against the live Nusuk + Groq endpoints (TTFT / TTFA via streamed responses) |
+| `run_pipeline_eval.py` | Direct STT → LLM → TTS API calls; saves audio artifacts (assumes `local_api` provider — does not speak Nusuk JWT) |
+| `compare.py` | Side-by-side latency comparison: direct vs. LiveKit (same `local_api` assumption as above) |
 
 ## Test data
 
@@ -26,6 +27,30 @@ The constraint is a Python tooling limitation, not a LiveKit server limitation:
 - `wave` module only reads int16 PCM (format 1)
 - `livekit.rtc.AudioFrame` requires int16 data (`sizeof(int16)` hardcoded)
 - LiveKit server itself receives Opus-encoded WebRTC audio and doesn't care about WAV format
+
+---
+
+## quick_speed.py
+
+Per-stage latency against the production endpoints (Nusuk JWT + Groq) without booting the agent or LiveKit. Streams the LLM and TTS responses to capture TTFT and TTFA — the metrics that drive perceived responsiveness.
+
+Reads `.env` from the repo root for credentials and URLs. Loads `agent/system_prompt_rag.txt` if present, otherwise falls back to `AGENT_SYSTEM_PROMPT`. Honours `CUSTOM_LLM_QUERY_PREFIX`, `CUSTOM_LLM_TEMPERATURE`, `CUSTOM_LLM_MAX_TOKENS`, and `CUSTOM_LLM_REASONING_EFFORT` so the call shape matches what the agent sends.
+
+Requires a venv with `aiohttp`, `numpy`, `certifi` installed (the repo-level `.venv` is set up by `python3 -m venv .venv && .venv/bin/pip install -r eval/requirements.txt && .venv/bin/pip install certifi`).
+
+```bash
+# Single file
+.venv/bin/python eval/quick_speed.py eval/testdata/chunk_0005.wav
+
+# Full 20-file suite
+.venv/bin/python eval/quick_speed.py eval/testdata/chunk_*.wav
+```
+
+Output: one JSON line per file plus a summary block with `min / p50 / mean / max` for `stt_s`, `llm_ttft_s`, `llm_total_s`, `tts_ttfa_s`, `tts_total_s`, `e2e_first_audio_s`, and `e2e_total_s`.
+
+The first call typically pays a TLS handshake penalty (~`0.5s` extra on STT) that the keepalive pool absorbs for subsequent calls. The agent's prewarm prefetch already heats this connection in production.
+
+See `EXPERIMENT_LOG.md` for the most recent baseline numbers.
 
 ---
 

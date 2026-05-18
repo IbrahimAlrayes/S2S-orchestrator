@@ -4,3 +4,17 @@ prometheus_client>=0.20,<1
 pydantic-settings>=2,<3
 python-dotenv>=1,<2
 
+# TEMP: required by agent/plugins/rag/ — delete with that subtree when
+# Nusuk /chat/stream is fixed upstream.
+pymilvus>=2.4,<3
+
+# Self-hosted noise cancellation (agent/plugins/denoiser.py). deepfilternet
+# 0.5.6 (Aug 2023, latest release) imports `torchaudio.backend.common`, which
+# was removed in torchaudio 2.9. Pin both torch + torchaudio to 2.8.x —
+# community-recommended in DeepFilterNet#662. Together these add ~600 MB
+# to the image. Activated by AGENT_NOISE_CANCELLATION=true; import is
+# lazy, so installing without enabling costs disk only.
+torch==2.8.*
+torchaudio==2.8.*
+deepfilternet>=0.5,<1
+

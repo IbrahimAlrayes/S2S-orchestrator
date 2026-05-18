@@ -1,0 +1,103 @@
+{
+  "MILVUS_CONFIG": {
+    "METRIC_TYPE": "COSINE",
+    "BATCH_SIZE": 100,
+    "ASYNC_PROCESSING": false
+  },
+  "SEARCH_CONFIG": {
+    "NUMBER_OF_TOKENS_IN_CONTEXT": 3000,
+    "TOP_K_TO_RERANK": 12,
+    "TOP_K_TO_RETRIEVE": 20,
+    "HYBRID_SEARCH_ENABLED": true,
+    "SEARCH_PARAMETERS": {
+      "SPARSE_SEARCH": {
+        "metric_type": "IP",
+        "params": {},
+        "sparse_weight": 0.3
+      },
+      "DENSE_SEARCH": {
+        "metric_type": "IP",
+        "params": { "ef": 64 },
+        "dense_weight": 0.7
+      },
+      "DENSE_WEIGHT": 0.4,
+      "SPARSE_WEIGHT": 1.0
+    },
+    "OUTPUT_FIELDS": [
+      "id",
+      "collection_type",
+      "faq_question_ar",
+      "faq_answer_ar",
+      "faq_question_en",
+      "faq_answer_en",
+      "service_id",
+      "service_type",
+      "title_en",
+      "title_ar",
+      "description_en",
+      "description_ar",
+      "page_id",
+      "category",
+      "sub_category",
+      "stage_of_journey",
+      "target_users",
+      "tags_en",
+      "tags_ar",
+      "service_faq_en",
+      "service_faq_ar",
+      "sample_responses_en",
+      "sample_responses_ar",
+      "parent_service_id",
+      "fatawa_number",
+      "content_type_ar",
+      "topic_ar",
+      "topic_en",
+      "subtopic_ar",
+      "subtopic_en",
+      "source_reference",
+      "fatawa_question_ar",
+      "fatawa_answer_ar",
+      "fatawa_question_en",
+      "fatawa_answer_en",
+      "fatawa_tags_ar",
+      "fatawa_tags_en",
+      "related_services",
+      "external_links",
+      "legal_school",
+      "important_file_links",
+      "location_name_ar",
+      "location_name_en",
+      "location_city_ar",
+      "location_category_ar",
+      "location_category_en",
+      "location_sub_category",
+      "location_description_ar",
+      "location_description_en",
+      "location_contact_info",
+      "location_working_hours",
+      "location_address",
+      "location_rating",
+      "Zekar",
+      "Tabweeb",
+      "Sharh",
+      "Source"
+    ],
+    "CONTEXT_TO_LLM_FIELDS": {
+      "faq": {
+        "arabic": ["faq_question_ar", "faq_answer_ar"],
+        "english": ["faq_question_ar", "faq_answer_ar"]
+      },
+      "service": {
+        "arabic": ["title_ar", "description_ar", "tags_ar"],
+        "english": ["title_en", "description_en", "title_ar", "description_ar"]
+      },
+      "fatawa": {
+        "arabic": ["fatawa_question_ar", "fatawa_answer_ar", "topic_ar", "source_reference"],
+        "english": ["fatawa_question_en", "fatawa_answer_en", "fatawa_question_ar", "fatawa_answer_ar", "topic_en", "topic_ar", "source_reference"]
+      }
+    },
+    "ANNS_FIELD": "vector",
+    "ASYNC_PROCESSING": true,
+    "BATCH_SIZE": 50
+  }
+}

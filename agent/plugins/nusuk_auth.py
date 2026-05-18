@@ -59,6 +59,13 @@ class NusukTokenManager:
             self._token = None
             self._expires_at = 0.0
 
+    def seed_cache(self, token: str, expires_at: float) -> None:
+        # Seed the JWT cache from an out-of-band fetch. Used by sync prewarm to
+        # skip the auth RTT on the first job without sharing httpx connections
+        # across event loops (which corrupts the connection pool).
+        self._token = token
+        self._expires_at = expires_at
+
     async def _refresh(self) -> None:
         url = f"{self._base_url}/auth/token"
         logger.info("nusuk_auth_refresh url=%s client_id=%s", url, self._client_id)

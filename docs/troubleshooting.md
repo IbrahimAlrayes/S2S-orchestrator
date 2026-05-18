@@ -54,6 +54,31 @@ Adding a `# noqa: ARG002` comment suppresses linters that flag it as unused.
 
 ---
 
+## STT/TTS Wall Time Dominated by Network, Not Compute
+
+**Symptom**: STT warm wall ~570 ms while server-reported `processing_time_seconds` is ~88 ms (only 15% compute, 85% network). Auth POST round trips take ~200 ms warm even though they do almost no server work.
+
+**Root cause**: `dev.nusukai.com` resolves to `35.190.5.146`, a Google **Global** External Application Load Balancer (anycast). From a Saudi-Arabia client, BGP routes the TLS termination through a non-regional Google Front End (typically Europe), then back over Google's backbone to the cluster in `me-central2`. Round-trip cost: ~110 ms instead of the ~36 ms you'd get from a regional LB in the same datacenter as the cluster.
+
+Verify with:
+```bash
+ping -c 5 dev.nusukai.com         # ~110 ms p50 from SA
+ping -c 5 34.166.216.238          # ~36 ms p50 (regional LB on same cluster)
+.venv/bin/python eval/network_breakdown.py
+```
+
+**Why a Regional ALB is NOT the fix**: Regional ALB would route every non-Saudi user through Dammam, slowing them down. The public API is consumed by global users; Global ALB anycast is the correct shape there — clients hit their nearest Google PoP, then Google's backbone delivers to me-central2 fast. The 110 ms RTT you measured from a Saudi-Arabia client is just a quirk of Google's PoP coverage in the region; users elsewhere likely already get good anycast routing.
+
+**Real fixes**, in order of leverage:
+
+1. **In-cluster agent deployment** (recommended): Deploy the agent inside `gke_hajj-umrah-nsk-dev_me-central2_nsk` and route to STT/TTS via ClusterIP services. Pod-to-pod RTT is sub-millisecond. STT warm wall: ~110 ms (within 25 ms of the 88 ms compute floor). The agent's hot path runs ~50× per turn — eliminating its network cost matters far more than optimizing the public ingress (which the agent stops using). Full plan in [`docs/in-cluster-migration.md`](in-cluster-migration.md). Note: the cluster is a GKE *private* cluster, so LiveKit-server cannot live there — see §10 of the migration plan.
+
+2. **Triton gRPC streaming inference** (Phase 5 of the migration plan): Once the agent is in-cluster, replace its REST calls to nlp-rag-app with direct Triton gRPC calls including `stream_infer`. Hides upload behind realtime audio capture. Perceived turn-end wall: ~88 ms. Requires `tritonclient[grpc]` in the agent and a NetworkPolicy in `asr-serving`.
+
+These compose. Production target is in-cluster + Triton streaming.
+
+---
+
 ## TTS Takes 7+ Seconds
 
 **Symptom**: TTS wall time in eval is 7–8 s; a direct `curl` to the TTS endpoint takes 1–2 s.
