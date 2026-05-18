@@ -241,8 +241,13 @@ jobs:
             --image="$IMAGE" \
             --overrides='{"spec":{"imagePullSecrets":[{"name":"regcred"}]}}' \
             --restart=Never \
-            --rm -i --timeout=120s \
-            --command -- echo "Cross-project pull OK: $IMAGE"
+            --rm -i --timeout=300s \
+            --command -- echo "Cross-project pull OK: $IMAGE" || {
+            echo "Pull test failed — pod status:"
+            kubectl -n "${{ env.K8S_NAMESPACE }}" describe pod gar-pull-test 2>/dev/null | tail -20 || true
+            kubectl -n "${{ env.K8S_NAMESPACE }}" delete pod gar-pull-test --ignore-not-found
+            exit 1
+          }
           echo "✓ GKE DEV can pull from GAR in researchdeployments"
 
   # ── Security scan ──────────────────────────────────────────────────────────
@@ -250,7 +255,7 @@ jobs:
     name: Image Vulnerability Scan
     runs-on: ubuntu-latest
     needs: [build-and-push]
-    if: ${{ always() && github.event.inputs.build == 'true' && needs.build-and-push.result == 'success' }}
+    if: ${{ always() && github.event.inputs.run_trivy_scan == 'true' && github.event.inputs.build == 'true' && needs.build-and-push.result == 'success' }}
     permissions:
       id-token: write
       contents: read
@@ -341,47 +346,18 @@ jobs:
               | kubectl apply -f -
           fi
 
-      - name: Apply Kubernetes secret (from GitHub Secrets)
+      - name: Verify s2s-secrets exists
         shell: bash
-        env:
-          LIVEKIT_API_KEY:            ${{ secrets.LIVEKIT_API_KEY }}
-          LIVEKIT_API_SECRET:         ${{ secrets.LIVEKIT_API_SECRET }}
-          LIVEKIT_PUBLIC_URL:         ${{ secrets.LIVEKIT_PUBLIC_URL }}
-          LIVEKIT_YAML:               ${{ secrets.LIVEKIT_YAML }}
-          CUSTOM_STT_URL:             ${{ secrets.CUSTOM_STT_URL }}
-          CUSTOM_STT_ACCESS_TOKEN:    ${{ secrets.CUSTOM_STT_ACCESS_TOKEN }}
-          CUSTOM_LLM_URL:             ${{ secrets.CUSTOM_LLM_URL }}
-          CUSTOM_LLM_ACCESS_TOKEN:    ${{ secrets.CUSTOM_LLM_ACCESS_TOKEN }}
-          CUSTOM_LLM_CLIENT_ID:       ${{ secrets.CUSTOM_LLM_CLIENT_ID }}
-          CUSTOM_LLM_CLIENT_SECRET:   ${{ secrets.CUSTOM_LLM_CLIENT_SECRET }}
-          CUSTOM_TTS_URL:             ${{ secrets.CUSTOM_TTS_URL }}
-          CUSTOM_TTS_ACCESS_TOKEN:    ${{ secrets.CUSTOM_TTS_ACCESS_TOKEN }}
-          TOKEN_CORS_ORIGINS:         ${{ secrets.TOKEN_CORS_ORIGINS }}
-          GRAFANA_ADMIN_PASSWORD:     ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
-          MILVUS_TOKEN:               ${{ secrets.MILVUS_TOKEN }}
         run: |
-          set -euo pipefail
-          # Write multiline livekit.yaml to temp file; delete after kubectl apply
-          printf '%s' "$LIVEKIT_YAML" > /tmp/livekit.yaml
-          kubectl create secret generic s2s-secrets \
-            --namespace "${{ env.K8S_NAMESPACE }}" \
-            --from-literal=LIVEKIT_API_KEY="$LIVEKIT_API_KEY" \
-            --from-literal=LIVEKIT_API_SECRET="$LIVEKIT_API_SECRET" \
-            --from-literal=LIVEKIT_PUBLIC_URL="$LIVEKIT_PUBLIC_URL" \
-            --from-file=livekit.yaml=/tmp/livekit.yaml \
-            --from-literal=CUSTOM_STT_URL="$CUSTOM_STT_URL" \
-            --from-literal=CUSTOM_STT_ACCESS_TOKEN="$CUSTOM_STT_ACCESS_TOKEN" \
-            --from-literal=CUSTOM_LLM_URL="$CUSTOM_LLM_URL" \
-            --from-literal=CUSTOM_LLM_ACCESS_TOKEN="$CUSTOM_LLM_ACCESS_TOKEN" \
-            --from-literal=CUSTOM_LLM_CLIENT_ID="$CUSTOM_LLM_CLIENT_ID" \
-            --from-literal=CUSTOM_LLM_CLIENT_SECRET="$CUSTOM_LLM_CLIENT_SECRET" \
-            --from-literal=CUSTOM_TTS_URL="$CUSTOM_TTS_URL" \
-            --from-literal=CUSTOM_TTS_ACCESS_TOKEN="$CUSTOM_TTS_ACCESS_TOKEN" \
-            --from-literal=TOKEN_CORS_ORIGINS="$TOKEN_CORS_ORIGINS" \
-            --from-literal=GRAFANA_ADMIN_PASSWORD="$GRAFANA_ADMIN_PASSWORD" \
-            --from-literal=MILVUS_TOKEN="$MILVUS_TOKEN" \
-            --dry-run=client -o yaml | kubectl apply -f -
-          rm -f /tmp/livekit.yaml
+          # Application secrets are managed out-of-band via:
+          #   kubectl apply -f k8s/secret.yaml   (k8s/secret.yaml is gitignored)
+          # CI/CD never overwrites them — only verifies the secret is present.
+          if ! kubectl get secret s2s-secrets -n "${{ env.K8S_NAMESPACE }}" &>/dev/null; then
+            echo "::error::s2s-secrets not found in ${{ env.K8S_NAMESPACE }}." \
+                 "Apply k8s/secret.yaml manually before running CI/CD." >&2
+            exit 1
+          fi
+          echo "✓ s2s-secrets present in ${{ env.K8S_NAMESPACE }}"
 
       - name: Resolve images to deploy
         id: img

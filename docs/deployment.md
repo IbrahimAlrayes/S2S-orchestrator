@@ -409,9 +409,15 @@ Runs Trivy against the `s2s-agent` image. Non-blocking for DEV (`exit-code: 0`).
 
 Configure these in **Settings → Secrets and variables → Actions** on the repository.
 
-### GCP authentication
+> **Secret ownership model:**
+> CI/CD only needs secrets for its own infrastructure auth (WIF) and email notifications.
+> **Application secrets** (LiveKit, STT/LLM/TTS, CORS, Grafana, Milvus) are managed
+> exclusively via `k8s/secret.yaml` (gitignored) and applied manually with
+> `kubectl apply -f k8s/secret.yaml`. CI/CD never reads or overwrites them.
 
-> **WIF bindings** — both service accounts are already bound to `ibralrayes/S2S-orchestrator`.
+### GCP authentication (Workload Identity Federation)
+
+> Both service accounts are bound to `IbrahimAlrayes/S2S-orchestrator` on the `main` branch.
 > No further GCP-side setup is needed.
 
 | Secret | Exact value |
@@ -425,60 +431,34 @@ Roles granted:
 - `gha-cloudbuild-submitter` → `roles/cloudbuild.builds.editor` + `roles/cloudbuild.builds.builder` on `researchdeployments`
 - `gha-gke-deployer` → `roles/container.developer` on `hajj-umrah-nsk-dev`
 
-### LiveKit
-
-| Secret | Exact value |
-|---|---|
-| `LIVEKIT_API_KEY` | *(see k8s/secret.yaml)* |
-| `LIVEKIT_API_SECRET` | *(see k8s/secret.yaml)* |
-| `LIVEKIT_PUBLIC_URL` | `ws://34.166.12.170:7880` |
-| `LIVEKIT_YAML` | Paste the multiline block below exactly as the secret value, adding the `keys:` line matching your `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` |
-
-**`LIVEKIT_YAML` value:**
-```
-port: 7880
-
-rtc:
-  tcp_port: 7881
-  port_range_start: 50000
-  port_range_end: 50020
-  use_external_ip: true
-
-redis:
-  address: redis:6379
-
-keys:
-  <LIVEKIT_API_KEY>: <LIVEKIT_API_SECRET>
-
-prometheus_port: 6789
-```
-
-### STT / LLM / TTS
-
-| Secret | Exact value |
-|---|---|
-| `CUSTOM_STT_URL` | *(see k8s/secret.yaml)* |
-| `CUSTOM_STT_ACCESS_TOKEN` | *(see k8s/secret.yaml)* |
-| `CUSTOM_LLM_URL` | *(see k8s/secret.yaml)* |
-| `CUSTOM_LLM_ACCESS_TOKEN` | *(see k8s/secret.yaml)* |
-| `CUSTOM_LLM_CLIENT_ID` | *(see k8s/secret.yaml)* |
-| `CUSTOM_LLM_CLIENT_SECRET` | *(see k8s/secret.yaml)* |
-| `CUSTOM_TTS_URL` | *(see k8s/secret.yaml)* |
-| `CUSTOM_TTS_ACCESS_TOKEN` | *(see k8s/secret.yaml)* |
-
-### Other
-
-| Secret | Exact value |
-|---|---|
-| `TOKEN_CORS_ORIGINS` | *(see k8s/secret.yaml)* |
-| `GRAFANA_ADMIN_PASSWORD` | *(see k8s/secret.yaml)* |
-
 ### Email notifications (main-notify.yml)
 
 | Secret | Description |
 |---|---|
 | `MAIL_USERNAME` | Gmail address to send from and receive notifications |
 | `MAIL_PASSWORD` | Gmail App Password — generate at [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords) (not your login password) |
+
+### Application secrets — managed via k8s/secret.yaml only
+
+These are **not** GitHub secrets. Fill in `k8s/secret.yaml` (from `k8s/secret.yaml.template`) and apply manually:
+
+```bash
+cp k8s/secret.yaml.template k8s/secret.yaml
+# edit k8s/secret.yaml with real values
+kubectl apply -f k8s/secret.yaml
+```
+
+| Key in k8s/secret.yaml | Purpose |
+|---|---|
+| `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | LiveKit server auth |
+| `LIVEKIT_PUBLIC_URL` | WebSocket URL for demo frontend (`ws://34.166.12.170:7880`) |
+| `livekit.yaml` | Full LiveKit server config (keys block must match API key/secret above) |
+| `CUSTOM_STT_URL` / `CUSTOM_STT_ACCESS_TOKEN` | In-cluster AST service |
+| `CUSTOM_LLM_URL` / `CUSTOM_LLM_ACCESS_TOKEN` / `CUSTOM_LLM_CLIENT_ID` / `CUSTOM_LLM_CLIENT_SECRET` | In-cluster LLM / RAG service |
+| `CUSTOM_TTS_URL` / `CUSTOM_TTS_ACCESS_TOKEN` | In-cluster TTS service |
+| `TOKEN_CORS_ORIGINS` | Allowed CORS origins for token server |
+| `GRAFANA_ADMIN_PASSWORD` | Grafana dashboard admin password |
+| `MILVUS_TOKEN` | Milvus auth token (default `root:Milvus`; only used with `CUSTOM_LLM_PROVIDER=nusuk_rag`) |
 
 ---
 
