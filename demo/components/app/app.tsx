@@ -3,7 +3,7 @@
 import type { CSSProperties } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { TokenSourceFetchOptions } from 'livekit-client';
-import { TokenSource } from 'livekit-client';
+import { AudioPresets, Room, TokenSource } from 'livekit-client';
 import { useSession, useSessionContext, useSessionMessages } from '@livekit/components-react';
 import { WarningIcon } from '@phosphor-icons/react/dist/ssr';
 import type { AppConfig } from '@/app-config';
@@ -389,10 +389,42 @@ export function App({ appConfig }: AppProps) {
     });
   }, [appConfig, appendTrace]);
 
-  const session = useSession(
-    tokenSource,
-    appConfig.agentName ? { agentName: appConfig.agentName } : undefined
+  // Construct our own Room so the audio chain matches what the agent expects.
+  // Without this, the browser publishes 48 kHz audio with WebRTC NS + AGC on,
+  // so DeepFilterNet3 in the agent receives already-processed audio and the
+  // manager hears stacked NS rather than what our agent actually does.
+  //
+  // - echoCancellation stays ON: prevents agent TTS from bleeding back through
+  //   the user's mic into ASR.
+  // - noiseSuppression / autoGainControl / voiceIsolation OFF: DeepFilterNet3
+  //   in the agent is the only NS in the path.
+  // - 16 kHz mono matches Silero VAD + Nusuk ASR native rate; avoids resamples.
+  // - AudioPresets.speech = 24 kbps Opus narrowband; matches the 16 kHz frame
+  //   and is the lowest-latency preset.
+  const room = useMemo(
+    () =>
+      new Room({
+        audioCaptureDefaults: {
+          echoCancellation: true,
+          noiseSuppression: false,
+          autoGainControl: false,
+          voiceIsolation: false,
+          channelCount: 1,
+          sampleRate: 16_000,
+        },
+        publishDefaults: {
+          audioPreset: AudioPresets.speech,
+          dtx: true,
+          red: true,
+        },
+      }),
+    []
   );
+
+  const session = useSession(tokenSource, {
+    room,
+    ...(appConfig.agentName ? { agentName: appConfig.agentName } : {}),
+  });
 
   return (
     <AgentSessionProvider session={session}>
