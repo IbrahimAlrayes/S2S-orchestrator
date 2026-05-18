@@ -358,6 +358,7 @@ jobs:
           CUSTOM_TTS_ACCESS_TOKEN:    ${{ secrets.CUSTOM_TTS_ACCESS_TOKEN }}
           TOKEN_CORS_ORIGINS:         ${{ secrets.TOKEN_CORS_ORIGINS }}
           GRAFANA_ADMIN_PASSWORD:     ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+          MILVUS_TOKEN:               ${{ secrets.MILVUS_TOKEN }}
         run: |
           set -euo pipefail
           # Write multiline livekit.yaml to temp file; delete after kubectl apply
@@ -378,6 +379,7 @@ jobs:
             --from-literal=CUSTOM_TTS_ACCESS_TOKEN="$CUSTOM_TTS_ACCESS_TOKEN" \
             --from-literal=TOKEN_CORS_ORIGINS="$TOKEN_CORS_ORIGINS" \
             --from-literal=GRAFANA_ADMIN_PASSWORD="$GRAFANA_ADMIN_PASSWORD" \
+            --from-literal=MILVUS_TOKEN="$MILVUS_TOKEN" \
             --dry-run=client -o yaml | kubectl apply -f -
           rm -f /tmp/livekit.yaml
 

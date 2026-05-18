@@ -1,0 +1,94 @@
+name: Main Branch Notifier
+
+on:
+  push:
+    branches:
+      - main
+  workflow_run:
+    workflows: ["CI-CD"]
+    types: [requested, completed]
+
+jobs:
+  notify:
+    name: Send Email Alert
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Send email on push to main
+        if: github.event_name == 'push'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          to: ${{ secrets.MAIL_USERNAME }}
+          from: GitHub CI <${{ secrets.MAIL_USERNAME }}>
+          subject: "[S2S Orchestrator] New commit on main by ${{ github.actor }}"
+          body: |
+            A new commit was pushed to the main branch of S2S Orchestrator.
+
+            Repo:        ${{ github.repository }}
+            Branch:      ${{ github.ref_name }}
+            Commit:      ${{ github.sha }}
+            Author:      ${{ github.actor }}
+            Message:     ${{ github.event.head_commit.message }}
+
+            Cluster:     nsk  (GKE / me-central2)
+            Project:     hajj-umrah-nsk-dev
+            Namespace:   elm-s2s
+
+            View commit: https://github.com/${{ github.repository }}/commit/${{ github.sha }}
+
+      - name: Send email on CI-CD workflow triggered
+        if: github.event_name == 'workflow_run' && github.event.workflow_run.status == 'queued'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          to: ${{ secrets.MAIL_USERNAME }}
+          from: GitHub CI <${{ secrets.MAIL_USERNAME }}>
+          subject: "[S2S Orchestrator] CI-CD started by ${{ github.event.workflow_run.actor.login }}"
+          body: |
+            The CI-CD pipeline has been triggered for S2S Orchestrator.
+
+            Repo:         ${{ github.repository }}
+            Triggered by: ${{ github.event.workflow_run.actor.login }}
+            Run ID:       ${{ github.event.workflow_run.id }}
+            Status:       ${{ github.event.workflow_run.status }}
+
+            Target:       GKE cluster nsk / namespace elm-s2s
+            Registry:     me-central2-docker.pkg.dev/researchdeployments/nsk-s2s
+
+            View run: https://github.com/${{ github.repository }}/actions/runs/${{ github.event.workflow_run.id }}
+
+      - name: Send email on CI-CD workflow completed
+        if: github.event_name == 'workflow_run' && github.event.workflow_run.status == 'completed'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          to: ${{ secrets.MAIL_USERNAME }}
+          from: GitHub CI <${{ secrets.MAIL_USERNAME }}>
+          subject: "[S2S Orchestrator] CI-CD ${{ github.event.workflow_run.conclusion }} — run #${{ github.event.workflow_run.run_number }}"
+          body: |
+            The CI-CD pipeline for S2S Orchestrator has finished.
+
+            Result:       ${{ github.event.workflow_run.conclusion }}
+            Run #:        ${{ github.event.workflow_run.run_number }}
+            Triggered by: ${{ github.event.workflow_run.actor.login }}
+            Branch:       ${{ github.event.workflow_run.head_branch }}
+            Commit:       ${{ github.event.workflow_run.head_sha }}
+
+            Target:       GKE cluster nsk / namespace elm-s2s
+            Registry:     me-central2-docker.pkg.dev/researchdeployments/nsk-s2s
+
+            View run: https://github.com/${{ github.repository }}/actions/runs/${{ github.event.workflow_run.id }}

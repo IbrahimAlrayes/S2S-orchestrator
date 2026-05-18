@@ -411,41 +411,74 @@ Configure these in **Settings → Secrets and variables → Actions** on the rep
 
 ### GCP authentication
 
-| Secret | Description |
+> **WIF bindings** — both service accounts are already bound to `ibralrayes/S2S-orchestrator`.
+> No further GCP-side setup is needed.
+
+| Secret | Exact value |
 |---|---|
-| `GAR_PROVIDER` | Workload Identity provider URI for `researchdeployments` (format: `projects/<num>/locations/global/workloadIdentityPools/<pool>/providers/<provider>`) |
-| `GAR_SA_EMAIL` | Service account email with Cloud Build Editor + Artifact Registry Writer on `researchdeployments` |
-| `GKE_PROVIDER` | Workload Identity provider URI for `hajj-umrah-nsk-dev` |
-| `GKE_SA_EMAIL` | Service account email with GKE Developer + container.developer on `hajj-umrah-nsk-dev` |
+| `GAR_PROVIDER` | `projects/89433675168/locations/global/workloadIdentityPools/gha-rag-nusuk-pool/providers/gha-rag-nusuk-provider` |
+| `GAR_SA_EMAIL` | `gha-cloudbuild-submitter@researchdeployments.iam.gserviceaccount.com` |
+| `GKE_PROVIDER` | `projects/184617603524/locations/global/workloadIdentityPools/gha-rag-nusuk-gke-pool/providers/gha-rag-nusuk-gke-provider` |
+| `GKE_SA_EMAIL` | `gha-gke-deployer@hajj-umrah-nsk-dev.iam.gserviceaccount.com` |
+
+Roles granted:
+- `gha-cloudbuild-submitter` → `roles/cloudbuild.builds.editor` + `roles/cloudbuild.builds.builder` on `researchdeployments`
+- `gha-gke-deployer` → `roles/container.developer` on `hajj-umrah-nsk-dev`
 
 ### LiveKit
 
-| Secret | Description |
+| Secret | Exact value |
 |---|---|
-| `LIVEKIT_API_KEY` | LiveKit API key (must match `keys:` in `LIVEKIT_YAML`) |
-| `LIVEKIT_API_SECRET` | LiveKit API secret |
-| `LIVEKIT_PUBLIC_URL` | `wss://<livekit-lb-ip>:7880` — fill after first deploy |
-| `LIVEKIT_YAML` | Complete content of `livekit.yaml` (multiline) — includes keys block, RTC config, Redis address |
+| `LIVEKIT_API_KEY` | *(see k8s/secret.yaml)* |
+| `LIVEKIT_API_SECRET` | *(see k8s/secret.yaml)* |
+| `LIVEKIT_PUBLIC_URL` | `ws://34.166.12.170:7880` |
+| `LIVEKIT_YAML` | Paste the multiline block below exactly as the secret value, adding the `keys:` line matching your `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` |
+
+**`LIVEKIT_YAML` value:**
+```
+port: 7880
+
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50020
+  use_external_ip: true
+
+redis:
+  address: redis:6379
+
+keys:
+  <LIVEKIT_API_KEY>: <LIVEKIT_API_SECRET>
+
+prometheus_port: 6789
+```
 
 ### STT / LLM / TTS
 
-| Secret | Description |
+| Secret | Exact value |
 |---|---|
-| `CUSTOM_STT_URL` | Internal cluster DNS URL for ASR service |
-| `CUSTOM_STT_ACCESS_TOKEN` | Bearer token for ASR (empty string if no auth) |
-| `CUSTOM_LLM_URL` | Internal cluster DNS URL for LLM/RAG service |
-| `CUSTOM_LLM_ACCESS_TOKEN` | Bearer token for LLM |
-| `CUSTOM_LLM_CLIENT_ID` | Nusuk OAuth client ID (empty if unused) |
-| `CUSTOM_LLM_CLIENT_SECRET` | Nusuk OAuth client secret (empty if unused) |
-| `CUSTOM_TTS_URL` | Internal cluster DNS URL for TTS service |
-| `CUSTOM_TTS_ACCESS_TOKEN` | Bearer token for TTS (empty string if no auth) |
+| `CUSTOM_STT_URL` | *(see k8s/secret.yaml)* |
+| `CUSTOM_STT_ACCESS_TOKEN` | *(see k8s/secret.yaml)* |
+| `CUSTOM_LLM_URL` | *(see k8s/secret.yaml)* |
+| `CUSTOM_LLM_ACCESS_TOKEN` | *(see k8s/secret.yaml)* |
+| `CUSTOM_LLM_CLIENT_ID` | *(see k8s/secret.yaml)* |
+| `CUSTOM_LLM_CLIENT_SECRET` | *(see k8s/secret.yaml)* |
+| `CUSTOM_TTS_URL` | *(see k8s/secret.yaml)* |
+| `CUSTOM_TTS_ACCESS_TOKEN` | *(see k8s/secret.yaml)* |
 
 ### Other
 
+| Secret | Exact value |
+|---|---|
+| `TOKEN_CORS_ORIGINS` | *(see k8s/secret.yaml)* |
+| `GRAFANA_ADMIN_PASSWORD` | *(see k8s/secret.yaml)* |
+
+### Email notifications (main-notify.yml)
+
 | Secret | Description |
 |---|---|
-| `TOKEN_CORS_ORIGINS` | Comma-separated CORS origins (e.g. `https://s2s-dev.nusukai.com`) |
-| `GRAFANA_ADMIN_PASSWORD` | Grafana admin password |
+| `MAIL_USERNAME` | Gmail address to send from and receive notifications |
+| `MAIL_PASSWORD` | Gmail App Password — generate at [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords) (not your login password) |
 
 ---
 
