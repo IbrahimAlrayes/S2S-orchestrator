@@ -83,6 +83,13 @@ spec:
                 secretKeyRef:
                   name: s2s-secrets
                   key: CUSTOM_TTS_ACCESS_TOKEN
+            # Milvus auth — same token nlp-rag-app uses (`root:Milvus`).
+            # Only consumed when CUSTOM_LLM_PROVIDER=nusuk_rag.
+            - name: MILVUS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: s2s-secrets
+                  key: MILVUS_TOKEN
           ports:
             - name: metrics
               containerPort: 9090

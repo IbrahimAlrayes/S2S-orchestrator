@@ -11,15 +11,23 @@ data:
   AGENT_NAME: "nusuk-agent"
   AGENT_SYSTEM_PROMPT: "أجب بالعربية في أقل من 40 كلمة، وحاول الإجابة مباشرة عن سؤال المستخدم."
   AGENT_GREETING: "مرحبا، أنا مساعدك الصوتي. كيف أقدر أساعدك؟"
-  AGENT_USE_TURN_DETECTOR: "false"
+  # MultilingualModel turn detector — re-enabled now that the HF-cache fix
+  # (Dockerfile: HF_HOME=/opt/hf-cache) makes it loadable under runtime
+  # uid 1000. Falls back to VAD-only for Arabic (language not in the model).
+  AGENT_USE_TURN_DETECTOR: "true"
   AGENT_PARTICIPANT_IDENTITY: ""
   AGENT_VAD_ACTIVATION_THRESHOLD: "0.5"
   AGENT_ALLOW_INTERRUPTIONS: "true"
   AGENT_DISCARD_AUDIO_IF_UNINTERRUPTIBLE: "true"
   AGENT_MIN_INTERRUPTION_DURATION: "0.5"
-  AGENT_MIN_INTERRUPTION_WORDS: "0"
-  AGENT_MIN_ENDPOINTING_DELAY: "0.5"
-  AGENT_MAX_ENDPOINTING_DELAY: "5.0"
+  # Phase 1 tuning: min_words=1 filters coughs/mic bumps from spurious
+  # interruption events.
+  AGENT_MIN_INTERRUPTION_WORDS: "1"
+  # Phase 1 dynamic endpointing: tighter floor + ceiling. SDK adapts inside
+  # this window via EMA. Previous values (0.5 / 5.0) added ~200 ms floor
+  # and a 5 s worst case.
+  AGENT_MIN_ENDPOINTING_DELAY: "0.3"
+  AGENT_MAX_ENDPOINTING_DELAY: "2.0"
   AGENT_FALSE_INTERRUPTION_TIMEOUT: "2.0"
   AGENT_RESUME_FALSE_INTERRUPTION: "true"
   AGENT_MIN_CONSECUTIVE_SPEECH_DELAY: "0.0"
@@ -28,7 +36,14 @@ data:
   AGENT_DELETE_ROOM_ON_CLOSE: "false"
   AGENT_MAX_JOBS_PER_WORKER: "10"
   AGENT_METRICS_PORT: "9090"
+  # Self-hosted noise cancellation off by default (server-side DfNet costs
+  # ~0.4 cores per session — not viable at 100+ concurrent. Push NC to the
+  # browser via demo's audioCaptureDefaults instead).
+  AGENT_NOISE_CANCELLATION: "false"
   PROMETHEUS_MULTIPROC_DIR: "/tmp/prom_multiproc"
+  # HuggingFace cache path: matches Dockerfile ENV. Set explicitly here so
+  # any download path that re-reads HF_HOME at runtime sees the same value.
+  HF_HOME: "/opt/hf-cache"
 
   # ── STT defaults (non-sensitive) ─────────────────────────────────────────────
   CUSTOM_STT_PROVIDER: "local_api"
@@ -38,15 +53,39 @@ data:
   CUSTOM_STT_TARGET_SAMPLE_RATE: "16000"
 
   # ── LLM defaults (non-sensitive) ─────────────────────────────────────────────
-  CUSTOM_LLM_PROVIDER: "openai"
-  CUSTOM_LLM_MODEL: "qwen/qwen3-32b"
+  # Switched from `openai` (Qwen via proxy) to `nusuk_rag` (local-RAG path:
+  # embed → Milvus → rerank → LLM). LLM upstream itself still resolves via
+  # CUSTOM_LLM_URL (secret). This brings prod onto the same path local dev
+  # has been validating.
+  CUSTOM_LLM_PROVIDER: "nusuk_rag"
+  CUSTOM_LLM_MODEL: "openai/gpt-oss-120b"
   CUSTOM_LLM_LANGUAGE: "ar"
   CUSTOM_LLM_INCLUDE_METADATA: "true"
   CUSTOM_LLM_TOOL: "Knowledge"
   CUSTOM_LLM_AUTH_USER_ID: ""
   CUSTOM_LLM_TEMPERATURE: "0.2"
-  CUSTOM_LLM_MAX_TOKENS: "96"
+  # 96 was a smoke-test value — truncated replies mid-sentence in voice mode.
+  # 1200 matches the dev .env and gives enough budget for 2-3 short sentences.
+  CUSTOM_LLM_MAX_TOKENS: "1200"
+  CUSTOM_LLM_REASONING_EFFORT: "low"
   CUSTOM_LLM_TIMEOUT_SECONDS: "60"
+  CUSTOM_LLM_QUERY_PREFIX: "أجب في جملتين أو ثلاث جمل قصيرة فقط. ضع نقطة في نهاية كل جملة. لا تستخدم تنسيقًا نصيًا. / Answer in 2-3 short sentences only. End each sentence with a period. No markdown formatting."
+
+  # ── RAG (local-path retrieval, used when CUSTOM_LLM_PROVIDER=nusuk_rag) ──────
+  # All endpoints are cross-namespace ClusterIP DNS — no port-forwarding,
+  # no Cloudflare. Verified from inside the elm-s2s pod on 2026-05-18:
+  #   embed:   28 ms (model als-embedding-v1.5-4500)
+  #   rerank:  140 ms cold / 14 ms warm (model elm_reranker_v1)
+  #   milvus:  ~2 ms RTT
+  CUSTOM_LLM_RAG_TOP_K: "12"
+  EMBEDDING_SERVICE_URL: "http://embedding.nlp-rag.svc.cluster.local:8082/v1/embeddings"
+  RERANK_SERVICE_URL: "http://reranker.nlp-rag.svc.cluster.local:8002/score"
+  # In-cluster reranker serves `elm_reranker_v1` (vs `.org`'s
+  # `elm_rerank_32k_0.6b`). Ranking order matches; absolute scores differ.
+  RERANK_MODEL: "elm_reranker_v1"
+  MILVUS_HOST: "milvus.nlp-rag.svc.cluster.local"
+  MILVUS_PORT: "19530"
+  MILVUS_COLLECTION: "unified_nusuk_collection4"
 
   # ── TTS defaults (non-sensitive) ─────────────────────────────────────────────
   CUSTOM_TTS_PROVIDER: "local_api"
