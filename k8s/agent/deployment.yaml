@@ -24,7 +24,7 @@ spec:
       containers:
         - name: s2s-agent
           # Image built and pushed by k8s/build-push.sh
-          image: me-central2-docker.pkg.dev/researchdeployments/nsk-s2s/s2s-agent:latest
+          image: me-central2-docker.pkg.dev/researchdeployments/nsk-s2s/s2s-agent:build-20260518134240-f9d02a7d
           imagePullPolicy: Always
           command: ["python", "agent.py", "start"]
           envFrom:

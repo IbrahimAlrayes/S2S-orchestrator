@@ -23,7 +23,7 @@ spec:
         - name: regcred
       containers:
         - name: s2s-token-server
-          image: me-central2-docker.pkg.dev/researchdeployments/nsk-s2s/s2s-token-server:latest
+          image: me-central2-docker.pkg.dev/researchdeployments/nsk-s2s/s2s-token-server:build-20260518134240-f9d02a7d
           imagePullPolicy: Always
           env:
             - name: LIVEKIT_API_KEY
