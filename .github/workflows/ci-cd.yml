@@ -1,0 +1,474 @@
+name: CI-CD
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_validate:
+        description: Skip lint & test
+        type: boolean
+        default: false
+        required: false
+      validate_mode:
+        description: Validation mode (strict blocks on all issues; relaxed is stage-friendly)
+        type: choice
+        options:
+          - relaxed
+          - strict
+        default: relaxed
+        required: false
+      build:
+        description: 'Step 1-2: Build images via Cloud Build and push to GAR'
+        type: boolean
+        default: true
+        required: false
+      verify_pull:
+        description: 'Step 3: Verify cross-project GAR pull from GKE project'
+        type: boolean
+        default: false
+        required: false
+      deploy:
+        description: 'Step 4: Deploy to DEV GKE after build'
+        type: boolean
+        default: true
+        required: false
+      image_tag:
+        description: Image tag to deploy (used when build=false)
+        type: string
+        required: false
+      run_trivy_scan:
+        description: Run Trivy vulnerability scan (optional)
+        type: boolean
+        default: false
+        required: false
+
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  K8S_NAMESPACE: elm-s2s
+  GAR_PROJECT_ID: researchdeployments
+  GAR_LOCATION: me-central2
+  GAR_REPO: nsk-s2s
+  GKE_PROJECT_ID: hajj-umrah-nsk-dev
+  GKE_CLUSTER: nsk
+  GKE_LOCATION: me-central2
+  PYTHON_VERSION: '3.11'
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  # ── 0. Lint & Test ─────────────────────────────────────────────────────────
+  validate:
+    name: Lint & Test
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.skip_validate != 'true' }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r agent/requirements.txt -r token-server/requirements.txt
+          pip install ruff mypy pip-audit
+
+      - name: Ruff (fatal errors only — relaxed)
+        if: ${{ github.event.inputs.validate_mode == 'relaxed' }}
+        run: ruff check agent/ token-server/ --select E9,F63,F7,F82
+
+      - name: Ruff (lint — strict)
+        if: ${{ github.event.inputs.validate_mode != 'relaxed' }}
+        run: ruff check agent/ token-server/ || (echo 'Ruff found issues' && exit 1)
+
+      - name: MyPy (type check — relaxed, non-blocking)
+        if: ${{ github.event.inputs.validate_mode == 'relaxed' }}
+        continue-on-error: true
+        run: mypy agent/ token-server/ --ignore-missing-imports || true
+
+      - name: MyPy (type check — strict)
+        if: ${{ github.event.inputs.validate_mode != 'relaxed' }}
+        run: mypy agent/ token-server/ || (echo 'MyPy type errors' && exit 1)
+
+      - name: pip-audit (relaxed, non-blocking)
+        if: ${{ github.event.inputs.validate_mode == 'relaxed' }}
+        continue-on-error: true
+        run: pip-audit --fail-on-vuln || true
+
+      - name: pip-audit (strict)
+        if: ${{ github.event.inputs.validate_mode != 'relaxed' }}
+        run: pip-audit --fail-on-vuln || (echo 'Dependency vulnerabilities found' && exit 1)
+
+  # ── 1-2. Cloud Build → GAR ─────────────────────────────────────────────────
+  build-and-push:
+    name: 'Steps 1-2: Cloud Build → GAR'
+    runs-on: ubuntu-latest
+    needs: [validate]
+    if: ${{ always() && github.event.inputs.build == 'true' && (github.event.inputs.skip_validate == 'true' || needs.validate.result == 'success') }}
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      TAG: ${{ steps.meta.outputs.TAG }}
+      AGENT: ${{ steps.out.outputs.AGENT }}
+      TOKEN_SERVER: ${{ steps.out.outputs.TOKEN_SERVER }}
+      DEMO: ${{ steps.out.outputs.DEMO }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Compute tag (timestamp-shortsha)
+        id: meta
+        shell: bash
+        run: |
+          TS=$(date -u +%Y%m%d%H%M%S)
+          SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-8)
+          echo "TAG=build-${TS}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Auth to Google Cloud (GAR project)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GAR_PROVIDER }}
+          service_account: ${{ secrets.GAR_SA_EMAIL }}
+
+      - name: Setup gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Trigger Cloud Build (build + push to GAR)
+        id: cloudbuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          REGISTRY="${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.GAR_PROJECT_ID }}/${{ env.GAR_REPO }}"
+          BUILD_ID=$(gcloud builds submit . \
+            --project "${{ env.GAR_PROJECT_ID }}" \
+            --region  "${{ env.GAR_LOCATION }}" \
+            --config  cloudbuild.yaml \
+            --substitutions _REGISTRY=${REGISTRY},_TAG=${{ steps.meta.outputs.TAG }} \
+            --async --format='value(id)' 2>&1 | tail -1)
+          echo "BUILD_ID=$BUILD_ID" >> "$GITHUB_OUTPUT"
+          echo "Cloud Build submitted: $BUILD_ID"
+
+      - name: Wait for Cloud Build to complete
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_ID='${{ steps.cloudbuild.outputs.BUILD_ID }}'
+          PROJECT='${{ env.GAR_PROJECT_ID }}'
+          echo "Polling build $BUILD_ID ..."
+          while true; do
+            STATUS=$(gcloud builds describe "$BUILD_ID" \
+              --project "$PROJECT" \
+              --region  "${{ env.GAR_LOCATION }}" \
+              --format='value(status)' 2>/dev/null || echo 'UNKNOWN')
+            echo "  Status: $STATUS"
+            case "$STATUS" in
+              SUCCESS)
+                echo "✓ Cloud Build succeeded"; break ;;
+              FAILURE|INTERNAL_ERROR|TIMEOUT|CANCELLED|EXPIRED)
+                echo "✗ Cloud Build failed: $STATUS" >&2
+                echo "  https://console.cloud.google.com/cloud-build/builds/$BUILD_ID?project=$PROJECT"
+                exit 1 ;;
+              *)
+                sleep 15 ;;
+            esac
+          done
+
+      - name: Set image outputs
+        id: out
+        shell: bash
+        run: |
+          R="${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.GAR_PROJECT_ID }}/${{ env.GAR_REPO }}"
+          T="${{ steps.meta.outputs.TAG }}"
+          echo "AGENT=${R}/s2s-agent:${T}"         >> "$GITHUB_OUTPUT"
+          echo "TOKEN_SERVER=${R}/s2s-token-server:${T}" >> "$GITHUB_OUTPUT"
+          echo "DEMO=${R}/s2s-demo:${T}"            >> "$GITHUB_OUTPUT"
+
+  # ── 3. Verify cross-project GAR pull ───────────────────────────────────────
+  verify-gar-pull:
+    name: 'Step 3: Verify cross-project GAR pull'
+    runs-on: ubuntu-latest
+    needs: [build-and-push]
+    if: ${{ always() && github.event.inputs.verify_pull == 'true' && (github.event.inputs.build == 'true' || github.event.inputs.image_tag != '') && (github.event.inputs.build != 'true' || needs.build-and-push.result == 'success') }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Auth to Google Cloud (GKE project)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GKE_PROVIDER }}
+          service_account: ${{ secrets.GKE_SA_EMAIL }}
+
+      - name: Setup gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Install gke-gcloud-auth-plugin
+        run: gcloud components install gke-gcloud-auth-plugin --quiet
+
+      - name: Get GKE credentials
+        run: gcloud container clusters get-credentials "${{ env.GKE_CLUSTER }}" --region "${{ env.GKE_LOCATION }}" --project "${{ env.GKE_PROJECT_ID }}"
+
+      - name: Resolve image to verify
+        id: img
+        shell: bash
+        run: |
+          if [ "${{ github.event.inputs.build }}" = "true" ]; then
+            IMAGE='${{ needs.build-and-push.outputs.AGENT }}'
+          else
+            R="${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.GAR_PROJECT_ID }}/${{ env.GAR_REPO }}"
+            IMAGE="${R}/s2s-agent:${{ github.event.inputs.image_tag }}"
+          fi
+          echo "IMAGE=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "Will verify pull of: $IMAGE"
+
+      - name: Pull test (temp pod in GKE DEV)
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE='${{ steps.img.outputs.IMAGE }}'
+          echo "Launching pull-test pod for $IMAGE ..."
+          kubectl -n "${{ env.K8S_NAMESPACE }}" run gar-pull-test \
+            --image="$IMAGE" \
+            --overrides='{"spec":{"imagePullSecrets":[{"name":"regcred"}]}}' \
+            --restart=Never \
+            --rm -i --timeout=120s \
+            --command -- echo "Cross-project pull OK: $IMAGE"
+          echo "✓ GKE DEV can pull from GAR in researchdeployments"
+
+  # ── Security scan ──────────────────────────────────────────────────────────
+  security-scan:
+    name: Image Vulnerability Scan
+    runs-on: ubuntu-latest
+    needs: [build-and-push]
+    if: ${{ always() && github.event.inputs.build == 'true' && needs.build-and-push.result == 'success' }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: '.'
+          sparse-checkout-cone-mode: false
+
+      - name: Auth to Google Cloud (GAR project)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GAR_PROVIDER }}
+          service_account: ${{ secrets.GAR_SA_EMAIL }}
+
+      - name: Setup gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for GAR
+        run: gcloud auth configure-docker ${{ env.GAR_LOCATION }}-docker.pkg.dev --quiet
+
+      - name: Trivy scan (agent image)
+        if: ${{ github.event.inputs.run_trivy_scan == 'true' }}
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ needs.build-and-push.outputs.AGENT }}
+          format: 'table'
+          exit-code: '0'
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+
+      - name: Fail on high/critical (non-blocking for DEV)
+        if: ${{ github.event.inputs.run_trivy_scan == 'true' }}
+        continue-on-error: true
+        run: |
+          echo "::warning::Trivy found HIGH/CRITICAL vulnerabilities — review before production"
+          trivy image --severity CRITICAL,HIGH --exit-code 1 --ignore-unfixed \
+            ${{ needs.build-and-push.outputs.AGENT }} || \
+            echo 'High/Critical vulns found (non-blocking for DEV)'
+
+  # ── 4. Deploy to DEV GKE ───────────────────────────────────────────────────
+  deploy:
+    name: 'Step 4: Deploy to DEV GKE'
+    runs-on: ubuntu-latest
+    needs: [validate, build-and-push, security-scan]
+    permissions:
+      id-token: write
+      contents: write
+    if: ${{ always() && github.event.inputs.deploy == 'true' && (github.event.inputs.skip_validate == 'true' || needs.validate.result == 'success') && (github.event.inputs.build == 'true' || github.event.inputs.image_tag != '') && (github.event.inputs.build != 'true' || needs.build-and-push.result == 'success') && (needs.security-scan.result == 'success' || needs.security-scan.result == 'skipped') }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Auth to Google Cloud (GKE project)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GKE_PROVIDER }}
+          service_account: ${{ secrets.GKE_SA_EMAIL }}
+
+      - name: Setup gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Install gke-gcloud-auth-plugin
+        run: gcloud components install gke-gcloud-auth-plugin --quiet
+
+      - name: Get GKE credentials
+        run: gcloud container clusters get-credentials "${{ env.GKE_CLUSTER }}" --region "${{ env.GKE_LOCATION }}" --project "${{ env.GKE_PROJECT_ID }}"
+
+      - name: Ensure namespace exists
+        run: kubectl apply -f k8s/namespace.yaml
+
+      - name: Copy regcred from nlp-rag if missing
+        shell: bash
+        run: |
+          if kubectl get secret regcred -n "${{ env.K8S_NAMESPACE }}" &>/dev/null; then
+            echo "✓ regcred already present in ${{ env.K8S_NAMESPACE }}"
+          else
+            echo "Copying regcred from nlp-rag → ${{ env.K8S_NAMESPACE }} ..."
+            kubectl get secret regcred -n nlp-rag -o json \
+              | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          d['metadata'] = {'name': 'regcred', 'namespace': '${{ env.K8S_NAMESPACE }}'}
+          d.pop('status', None)
+          print(json.dumps(d))
+          " \
+              | kubectl apply -f -
+          fi
+
+      - name: Apply Kubernetes secret (from GitHub Secrets)
+        shell: bash
+        env:
+          LIVEKIT_API_KEY:            ${{ secrets.LIVEKIT_API_KEY }}
+          LIVEKIT_API_SECRET:         ${{ secrets.LIVEKIT_API_SECRET }}
+          LIVEKIT_PUBLIC_URL:         ${{ secrets.LIVEKIT_PUBLIC_URL }}
+          LIVEKIT_YAML:               ${{ secrets.LIVEKIT_YAML }}
+          CUSTOM_STT_URL:             ${{ secrets.CUSTOM_STT_URL }}
+          CUSTOM_STT_ACCESS_TOKEN:    ${{ secrets.CUSTOM_STT_ACCESS_TOKEN }}
+          CUSTOM_LLM_URL:             ${{ secrets.CUSTOM_LLM_URL }}
+          CUSTOM_LLM_ACCESS_TOKEN:    ${{ secrets.CUSTOM_LLM_ACCESS_TOKEN }}
+          CUSTOM_LLM_CLIENT_ID:       ${{ secrets.CUSTOM_LLM_CLIENT_ID }}
+          CUSTOM_LLM_CLIENT_SECRET:   ${{ secrets.CUSTOM_LLM_CLIENT_SECRET }}
+          CUSTOM_TTS_URL:             ${{ secrets.CUSTOM_TTS_URL }}
+          CUSTOM_TTS_ACCESS_TOKEN:    ${{ secrets.CUSTOM_TTS_ACCESS_TOKEN }}
+          TOKEN_CORS_ORIGINS:         ${{ secrets.TOKEN_CORS_ORIGINS }}
+          GRAFANA_ADMIN_PASSWORD:     ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # Write multiline livekit.yaml to temp file; delete after kubectl apply
+          printf '%s' "$LIVEKIT_YAML" > /tmp/livekit.yaml
+          kubectl create secret generic s2s-secrets \
+            --namespace "${{ env.K8S_NAMESPACE }}" \
+            --from-literal=LIVEKIT_API_KEY="$LIVEKIT_API_KEY" \
+            --from-literal=LIVEKIT_API_SECRET="$LIVEKIT_API_SECRET" \
+            --from-literal=LIVEKIT_PUBLIC_URL="$LIVEKIT_PUBLIC_URL" \
+            --from-file=livekit.yaml=/tmp/livekit.yaml \
+            --from-literal=CUSTOM_STT_URL="$CUSTOM_STT_URL" \
+            --from-literal=CUSTOM_STT_ACCESS_TOKEN="$CUSTOM_STT_ACCESS_TOKEN" \
+            --from-literal=CUSTOM_LLM_URL="$CUSTOM_LLM_URL" \
+            --from-literal=CUSTOM_LLM_ACCESS_TOKEN="$CUSTOM_LLM_ACCESS_TOKEN" \
+            --from-literal=CUSTOM_LLM_CLIENT_ID="$CUSTOM_LLM_CLIENT_ID" \
+            --from-literal=CUSTOM_LLM_CLIENT_SECRET="$CUSTOM_LLM_CLIENT_SECRET" \
+            --from-literal=CUSTOM_TTS_URL="$CUSTOM_TTS_URL" \
+            --from-literal=CUSTOM_TTS_ACCESS_TOKEN="$CUSTOM_TTS_ACCESS_TOKEN" \
+            --from-literal=TOKEN_CORS_ORIGINS="$TOKEN_CORS_ORIGINS" \
+            --from-literal=GRAFANA_ADMIN_PASSWORD="$GRAFANA_ADMIN_PASSWORD" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          rm -f /tmp/livekit.yaml
+
+      - name: Resolve images to deploy
+        id: img
+        shell: bash
+        run: |
+          if [ "${{ github.event.inputs.build }}" = "true" ]; then
+            AGENT='${{ needs.build-and-push.outputs.AGENT }}'
+            TOKEN_SERVER='${{ needs.build-and-push.outputs.TOKEN_SERVER }}'
+            DEMO='${{ needs.build-and-push.outputs.DEMO }}'
+            TAG='${{ needs.build-and-push.outputs.TAG }}'
+          else
+            if [ -z "${{ github.event.inputs.image_tag }}" ]; then
+              echo "image_tag is required when build=false" >&2; exit 1
+            fi
+            R="${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.GAR_PROJECT_ID }}/${{ env.GAR_REPO }}"
+            TAG='${{ github.event.inputs.image_tag }}'
+            AGENT="${R}/s2s-agent:${TAG}"
+            TOKEN_SERVER="${R}/s2s-token-server:${TAG}"
+            DEMO="${R}/s2s-demo:${TAG}"
+          fi
+          echo "AGENT=$AGENT"               >> "$GITHUB_OUTPUT"
+          echo "TOKEN_SERVER=$TOKEN_SERVER"  >> "$GITHUB_OUTPUT"
+          echo "DEMO=$DEMO"                  >> "$GITHUB_OUTPUT"
+          echo "TAG=$TAG"                    >> "$GITHUB_OUTPUT"
+
+      - name: Update manifest image tags and apply
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG='${{ steps.img.outputs.TAG }}'
+          # Patch image tags in manifests
+          sed -i "s#\(nsk-s2s/s2s-agent:\)\S\+#\1${TAG}#"        k8s/agent/deployment.yaml
+          sed -i "s#\(nsk-s2s/s2s-token-server:\)\S\+#\1${TAG}#"  k8s/token-server/deployment.yaml
+          sed -i "s#\(nsk-s2s/s2s-demo:\)\S\+#\1${TAG}#"          k8s/demo/deployment.yaml
+          # Apply all manifests in dependency order
+          kubectl apply -f k8s/configmap.yaml
+          kubectl apply -f k8s/redis/
+          kubectl apply -f k8s/livekit/
+          kubectl apply -f k8s/agent/
+          kubectl apply -f k8s/token-server/
+          kubectl apply -f k8s/demo/
+          kubectl apply -f k8s/ingress.yaml
+
+      - name: Pin exact image tags (override any cached kube state)
+        shell: bash
+        run: |
+          kubectl -n "${{ env.K8S_NAMESPACE }}" set image deploy/s2s-agent         s2s-agent='${{ steps.img.outputs.AGENT }}'
+          kubectl -n "${{ env.K8S_NAMESPACE }}" set image deploy/s2s-token-server   s2s-token-server='${{ steps.img.outputs.TOKEN_SERVER }}'
+          kubectl -n "${{ env.K8S_NAMESPACE }}" set image deploy/s2s-demo           s2s-demo='${{ steps.img.outputs.DEMO }}'
+
+      - name: Wait for rollouts
+        shell: bash
+        run: |
+          kubectl -n "${{ env.K8S_NAMESPACE }}" rollout status deploy/s2s-token-server --timeout=300s
+          kubectl -n "${{ env.K8S_NAMESPACE }}" rollout status deploy/s2s-demo         --timeout=300s
+          kubectl -n "${{ env.K8S_NAMESPACE }}" rollout status deploy/s2s-agent        --timeout=300s
+
+      - name: Smoke test (token-server /health)
+        id: smoke
+        continue-on-error: true
+        shell: bash
+        run: |
+          kubectl -n "${{ env.K8S_NAMESPACE }}" exec deployment/s2s-token-server \
+            -- curl -fsS http://localhost:8080/health
+
+      - name: Rollback on smoke failure
+        if: ${{ steps.smoke.outcome == 'failure' }}
+        shell: bash
+        run: |
+          echo "Smoke test failed — rolling back all deployments" >&2
+          kubectl -n "${{ env.K8S_NAMESPACE }}" rollout undo deploy/s2s-agent        || true
+          kubectl -n "${{ env.K8S_NAMESPACE }}" rollout undo deploy/s2s-token-server || true
+          kubectl -n "${{ env.K8S_NAMESPACE }}" rollout undo deploy/s2s-demo         || true
+          kubectl -n "${{ env.K8S_NAMESPACE }}" get deploy -o wide
+          exit 1
+
+      - name: Commit manifest tag updates
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git fetch origin main
+          git rebase --autostash origin/main
+          git add k8s/agent/deployment.yaml k8s/token-server/deployment.yaml k8s/demo/deployment.yaml
+          TAG='${{ steps.img.outputs.TAG }}'
+          if git diff --cached --quiet; then
+            echo "No manifest changes to commit"
+          else
+            git commit -m "ci: bump image tags to ${TAG}"
+            git push origin HEAD:main
+          fi

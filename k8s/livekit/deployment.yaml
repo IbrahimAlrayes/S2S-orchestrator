@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: livekit-server
+  namespace: elm-s2s
+  labels:
+    app: livekit-server
+    component: media-server
+spec:
+  # Single replica required with hostNetwork — multiple pods on the same node
+  # would conflict on ports 7880/7881 and the UDP range.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: livekit-server
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: livekit-server
+        component: media-server
+    spec:
+      # hostNetwork: true gives LiveKit direct access to the node's network
+      # interfaces. This is required for two reasons:
+      #   1. UDP media ports (50000-50020) bypass kube-proxy overhead and
+      #      allow GCE to route packets directly to the node.
+      #   2. use_external_ip: true in livekit.yaml queries GCE instance metadata
+      #      to discover and advertise the node's external IP as ICE candidates.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector:
+        cloud.google.com/gke-nodepool: general-e-standard-8-nsk
+      containers:
+        - name: livekit-server
+          image: livekit/livekit-server:latest
+          args: ["--config", "/etc/livekit/livekit.yaml"]
+          # API keys are provided via the livekit.yaml Secret mount below —
+          # no environment variables needed for LiveKit itself.
+          ports:
+            - name: http
+              containerPort: 7880
+              protocol: TCP
+            - name: rtc-tcp
+              containerPort: 7881
+              protocol: TCP
+            - name: prometheus
+              containerPort: 6789
+              protocol: TCP
+          volumeMounts:
+            - name: livekit-config
+              mountPath: /etc/livekit
+              readOnly: true
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 7880
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 7880
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: livekit-config
+          secret:
+            secretName: s2s-secrets
+            items:
+              - key: livekit.yaml
+                path: livekit.yaml

@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: s2s-demo
+  namespace: elm-s2s
+  labels:
+    app: s2s-demo
+    component: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: s2s-demo
+  template:
+    metadata:
+      labels:
+        app: s2s-demo
+        component: frontend
+    spec:
+      nodeSelector:
+        cloud.google.com/gke-nodepool: general-e-standard-8-nsk
+      imagePullSecrets:
+        - name: regcred
+      containers:
+        - name: s2s-demo
+          image: me-central2-docker.pkg.dev/researchdeployments/nsk-s2s/s2s-demo:latest
+          imagePullPolicy: Always
+          env:
+            - name: LIVEKIT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: s2s-secrets
+                  key: LIVEKIT_API_KEY
+            - name: LIVEKIT_API_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: s2s-secrets
+                  key: LIVEKIT_API_SECRET
+            # Next.js uses LIVEKIT_URL (server-side) to return the public WebSocket
+            # URL to browser clients. Map from LIVEKIT_PUBLIC_URL in the Secret.
+            - name: LIVEKIT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: s2s-secrets
+                  key: LIVEKIT_PUBLIC_URL
+            - name: AGENT_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: s2s-config
+                  key: AGENT_NAME
+            - name: NODE_OPTIONS
+              value: "--max-old-space-size=768"
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1000

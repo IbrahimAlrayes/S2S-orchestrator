@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: elm-s2s
+  labels:
+    app: redis
+    component: cache
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+        component: cache
+    spec:
+      # Pin to the stateful node pool (e2-standard-4) — appropriate for
+      # persistent/session-scoped workloads. CPU-only; GPU pool is excluded
+      # automatically by its nvidia.com/gpu=present:NoSchedule taint.
+      nodeSelector:
+        cloud.google.com/gke-nodepool: stateful-pool
+      tolerations:
+        - key: "stateful"
+          operator: "Equal"
+          value: "true"
+          effect: "NoSchedule"
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          # RDB snapshot: save if at least 1 key changed in the last 60 s.
+          # AOF provides finer-grained durability; disabled here to reduce I/O
+          # on the dev cluster. Enable --appendonly yes for stricter durability.
+          args:
+            - redis-server
+            - --save
+            - "60"
+            - "1"
+            - --appendonly
+            - "no"
+            - --stop-writes-on-bgsave-error
+            - "no"
+            - --dir
+            - /data
+          ports:
+            - name: redis
+              containerPort: 6379
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+            runAsUser: 999
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+      volumes:
+        - name: redis-data
+          persistentVolumeClaim:
+            claimName: redis-data

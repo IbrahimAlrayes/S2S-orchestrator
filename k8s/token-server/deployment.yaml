@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: s2s-token-server
+  namespace: elm-s2s
+  labels:
+    app: s2s-token-server
+    component: token-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: s2s-token-server
+  template:
+    metadata:
+      labels:
+        app: s2s-token-server
+        component: token-server
+    spec:
+      nodeSelector:
+        cloud.google.com/gke-nodepool: general-e-standard-8-nsk
+      imagePullSecrets:
+        - name: regcred
+      containers:
+        - name: s2s-token-server
+          image: me-central2-docker.pkg.dev/researchdeployments/nsk-s2s/s2s-token-server:latest
+          imagePullPolicy: Always
+          env:
+            - name: LIVEKIT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: s2s-secrets
+                  key: LIVEKIT_API_KEY
+            - name: LIVEKIT_API_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: s2s-secrets
+                  key: LIVEKIT_API_SECRET
+            # Public URL returned in token responses — fill in after LiveKit LB is created.
+            - name: LIVEKIT_PUBLIC_URL
+              valueFrom:
+                secretKeyRef:
+                  name: s2s-secrets
+                  key: LIVEKIT_PUBLIC_URL
+            - name: TOKEN_CORS_ORIGINS
+              valueFrom:
+                secretKeyRef:
+                  name: s2s-secrets
+                  key: TOKEN_CORS_ORIGINS
+            - name: TOKEN_SERVER_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: s2s-config
+                  key: TOKEN_SERVER_PORT
+            - name: TOKEN_TTL_MINUTES
+              valueFrom:
+                configMapKeyRef:
+                  name: s2s-config
+                  key: TOKEN_TTL_MINUTES
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1000

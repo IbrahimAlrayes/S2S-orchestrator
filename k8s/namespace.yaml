@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: elm-s2s
+  labels:
+    project: s2s-orchestrator
+    env: dev

@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: s2s-token-server
+  namespace: elm-s2s
+  labels:
+    app: s2s-token-server
+  annotations:
+    # Enable container-native load balancing (NEG) so GKE Ingress routes
+    # directly to pods without going through NodePort.
+    cloud.google.com/neg: '{"ingress": true}'
+spec:
+  type: ClusterIP
+  selector:
+    app: s2s-token-server
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP

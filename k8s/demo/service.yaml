@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: s2s-demo
+  namespace: elm-s2s
+  labels:
+    app: s2s-demo
+  annotations:
+    # Container-native load balancing — GKE Ingress routes directly to pods.
+    cloud.google.com/neg: '{"ingress": true}'
+spec:
+  type: ClusterIP
+  selector:
+    app: s2s-demo
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+      protocol: TCP

@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data
+  namespace: elm-s2s
+  labels:
+    app: redis
+    component: cache
+spec:
+  # standard-rwo: GKE-managed SSD persistent disk (ReadWriteOnce).
+  # Bound to a single node — safe because Redis runs as a single replica.
+  # If standard-rwo is unavailable in this region, fall back to "standard" (HDD).
+  storageClassName: standard-rwo
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      # 5 Gi is sufficient for dev session data. Resize if usage grows:
+      #   kubectl patch pvc redis-data -n elm-s2s -p '{"spec":{"resources":{"requests":{"storage":"10Gi"}}}}'
+      storage: 5Gi

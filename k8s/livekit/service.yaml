@@ -1,0 +1,73 @@
+# ── TCP LoadBalancer ──────────────────────────────────────────────────────────
+# Handles WebSocket signalling (7880) and RTC-over-TCP fallback (7881).
+# externalTrafficPolicy: Local ensures the GCP passthrough LB only forwards to
+# the node running the LiveKit pod, which is required with hostNetwork: true.
+apiVersion: v1
+kind: Service
+metadata:
+  name: livekit-server
+  namespace: elm-s2s
+  labels:
+    app: livekit-server
+  annotations:
+    # Explicitly request an external passthrough Network Load Balancer (Layer-4).
+    networking.gke.io/load-balancer-type: "External"
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  selector:
+    app: livekit-server
+  ports:
+    - name: http
+      port: 7880
+      targetPort: 7880
+      protocol: TCP
+    - name: rtc-tcp
+      port: 7881
+      targetPort: 7881
+      protocol: TCP
+---
+# ── UDP LoadBalancer ──────────────────────────────────────────────────────────
+# Handles WebRTC media (UDP 50000-50020).  Port range must match port_range_start
+# and port_range_end in the livekit.yaml Secret.
+#
+# IMPORTANT: After this service gets its external IP, update LIVEKIT_PUBLIC_URL
+# in k8s/secret.yaml to: wss://<TCP_LB_EXTERNAL_IP>:7880
+# AND update use_external_ip / node_ip in livekit.yaml if GKE nodes lack
+# individual external IPs (i.e. Cloud NAT only cluster).
+apiVersion: v1
+kind: Service
+metadata:
+  name: livekit-server-udp
+  namespace: elm-s2s
+  labels:
+    app: livekit-server
+  annotations:
+    networking.gke.io/load-balancer-type: "External"
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  selector:
+    app: livekit-server
+  ports:
+    - {name: udp-50000, port: 50000, targetPort: 50000, protocol: UDP}
+    - {name: udp-50001, port: 50001, targetPort: 50001, protocol: UDP}
+    - {name: udp-50002, port: 50002, targetPort: 50002, protocol: UDP}
+    - {name: udp-50003, port: 50003, targetPort: 50003, protocol: UDP}
+    - {name: udp-50004, port: 50004, targetPort: 50004, protocol: UDP}
+    - {name: udp-50005, port: 50005, targetPort: 50005, protocol: UDP}
+    - {name: udp-50006, port: 50006, targetPort: 50006, protocol: UDP}
+    - {name: udp-50007, port: 50007, targetPort: 50007, protocol: UDP}
+    - {name: udp-50008, port: 50008, targetPort: 50008, protocol: UDP}
+    - {name: udp-50009, port: 50009, targetPort: 50009, protocol: UDP}
+    - {name: udp-50010, port: 50010, targetPort: 50010, protocol: UDP}
+    - {name: udp-50011, port: 50011, targetPort: 50011, protocol: UDP}
+    - {name: udp-50012, port: 50012, targetPort: 50012, protocol: UDP}
+    - {name: udp-50013, port: 50013, targetPort: 50013, protocol: UDP}
+    - {name: udp-50014, port: 50014, targetPort: 50014, protocol: UDP}
+    - {name: udp-50015, port: 50015, targetPort: 50015, protocol: UDP}
+    - {name: udp-50016, port: 50016, targetPort: 50016, protocol: UDP}
+    - {name: udp-50017, port: 50017, targetPort: 50017, protocol: UDP}
+    - {name: udp-50018, port: 50018, targetPort: 50018, protocol: UDP}
+    - {name: udp-50019, port: 50019, targetPort: 50019, protocol: UDP}
+    - {name: udp-50020, port: 50020, targetPort: 50020, protocol: UDP}

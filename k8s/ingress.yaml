@@ -1,0 +1,80 @@
+# ── GKE Ingress (HTTP/S Global Load Balancer) ─────────────────────────────────
+#
+# Exposes the demo frontend and token server via a GKE-managed HTTP/S LB.
+#
+# Static IP: 34.54.4.30  (name: elm-s2s-ingress-ip)
+#   — dedicated IP reserved exclusively for this S2S deployment.
+#   Created with:
+#     gcloud compute addresses create elm-s2s-ingress-ip \
+#       --global --project=hajj-umrah-nsk-dev
+#
+# WHY a dedicated IP (not reusing nlp-rag-static-ip):
+#   - nlp-rag-static-ip (35.190.5.146) is IN_USE by the nlp-rag Ingress.
+#     A global IP can only be claimed by one Ingress at a time; reusing it
+#     would steal it from nlp-rag or fail silently.
+#   - Each workload owns its IP → independent lifecycle, no cross-team risk.
+#
+# Domain: Create a DNS A record for your chosen subdomain pointing to 34.54.4.30.
+#   Example:  s2s-dev.nusukai.com  →  34.54.4.30
+#   Then update the host fields below and the ManagedCertificate domains.
+#
+# ManagedCertificate: Uncomment the certificate resource once the DNS A record
+#   is active (GKE provisions TLS automatically after DNS propagates ~15 min).
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Uncomment after DNS A record is live and pointing to 34.54.4.30:
+#
+# apiVersion: networking.gke.io/v1
+# kind: ManagedCertificate
+# metadata:
+#   name: s2s-cert
+#   namespace: elm-s2s
+# spec:
+#   domains:
+#     - s2s-dev.nusukai.com        # ← update to your actual subdomain
+# ---
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: s2s-ingress
+  namespace: elm-s2s
+  labels:
+    app: s2s-ingress
+  annotations:
+    # Dedicated global static IP for S2S (34.54.4.30).
+    kubernetes.io/ingress.global-static-ip-name: "elm-s2s-ingress-ip"
+    # Uncomment once ManagedCertificate above is activated:
+    # networking.gke.io/managed-certificates: "s2s-cert"
+    # Force HTTP→HTTPS redirect when certificate is active:
+    # kubernetes.io/ingress.allow-http: "false"
+spec:
+  # defaultBackend routes all unmatched paths to the demo frontend.
+  defaultBackend:
+    service:
+      name: s2s-demo
+      port:
+        number: 3000
+  rules:
+    # ── Demo frontend ──────────────────────────────────────────────────────────
+    # Replace host value with your actual domain.
+    - host: s2s-dev.nusukai.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: s2s-demo
+                port:
+                  number: 3000
+          # Token server API — accessible at /api/token on the same domain.
+          # The demo Next.js app handles /api/token internally; this path exposes
+          # the standalone Python token server for external API consumers.
+          - path: /token
+            pathType: Prefix
+            backend:
+              service:
+                name: s2s-token-server
+                port:
+                  number: 8080

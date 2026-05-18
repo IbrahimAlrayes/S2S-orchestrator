@@ -1,0 +1,62 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: s2s-config
+  namespace: elm-s2s
+data:
+  # ── Internal LiveKit URL (used by the agent worker inside the cluster) ──────
+  LIVEKIT_URL: "ws://livekit-server:7880"
+
+  # ── Agent behaviour ──────────────────────────────────────────────────────────
+  AGENT_NAME: "nusuk-agent"
+  AGENT_SYSTEM_PROMPT: "أجب بالعربية في أقل من 40 كلمة، وحاول الإجابة مباشرة عن سؤال المستخدم."
+  AGENT_GREETING: "مرحبا، أنا مساعدك الصوتي. كيف أقدر أساعدك؟"
+  AGENT_USE_TURN_DETECTOR: "false"
+  AGENT_PARTICIPANT_IDENTITY: ""
+  AGENT_VAD_ACTIVATION_THRESHOLD: "0.5"
+  AGENT_ALLOW_INTERRUPTIONS: "true"
+  AGENT_DISCARD_AUDIO_IF_UNINTERRUPTIBLE: "true"
+  AGENT_MIN_INTERRUPTION_DURATION: "0.5"
+  AGENT_MIN_INTERRUPTION_WORDS: "0"
+  AGENT_MIN_ENDPOINTING_DELAY: "0.5"
+  AGENT_MAX_ENDPOINTING_DELAY: "5.0"
+  AGENT_FALSE_INTERRUPTION_TIMEOUT: "2.0"
+  AGENT_RESUME_FALSE_INTERRUPTION: "true"
+  AGENT_MIN_CONSECUTIVE_SPEECH_DELAY: "0.0"
+  AGENT_USE_TTS_ALIGNED_TRANSCRIPT: "false"
+  AGENT_CLOSE_ON_DISCONNECT: "true"
+  AGENT_DELETE_ROOM_ON_CLOSE: "false"
+  AGENT_MAX_JOBS_PER_WORKER: "10"
+  AGENT_METRICS_PORT: "9090"
+  PROMETHEUS_MULTIPROC_DIR: "/tmp/prom_multiproc"
+
+  # ── STT defaults (non-sensitive) ─────────────────────────────────────────────
+  CUSTOM_STT_PROVIDER: "local_api"
+  CUSTOM_STT_MODEL: "asr_ctc"
+  CUSTOM_STT_LANGUAGE: "ar"
+  CUSTOM_STT_TIMEOUT_SECONDS: "30"
+  CUSTOM_STT_TARGET_SAMPLE_RATE: "16000"
+
+  # ── LLM defaults (non-sensitive) ─────────────────────────────────────────────
+  CUSTOM_LLM_PROVIDER: "openai"
+  CUSTOM_LLM_MODEL: "qwen/qwen3-32b"
+  CUSTOM_LLM_LANGUAGE: "ar"
+  CUSTOM_LLM_INCLUDE_METADATA: "true"
+  CUSTOM_LLM_TOOL: "Knowledge"
+  CUSTOM_LLM_AUTH_USER_ID: ""
+  CUSTOM_LLM_TEMPERATURE: "0.2"
+  CUSTOM_LLM_MAX_TOKENS: "96"
+  CUSTOM_LLM_TIMEOUT_SECONDS: "60"
+
+  # ── TTS defaults (non-sensitive) ─────────────────────────────────────────────
+  CUSTOM_TTS_PROVIDER: "local_api"
+  CUSTOM_TTS_MODEL: "placeholder"
+  CUSTOM_TTS_VOICE: "default"
+  CUSTOM_TTS_SAMPLE_RATE: "24000"
+  CUSTOM_TTS_NUM_CHANNELS: "1"
+  CUSTOM_TTS_AUDIO_FORMAT: "wav"
+  CUSTOM_TTS_TIMEOUT_SECONDS: "60"
+
+  # ── Token server ──────────────────────────────────────────────────────────────
+  TOKEN_SERVER_PORT: "8080"
+  TOKEN_TTL_MINUTES: "60"

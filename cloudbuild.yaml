@@ -1,0 +1,89 @@
+# =============================================================================
+# Cloud Build pipeline — S2S Orchestrator
+# Builds three images in parallel and pushes to GAR me-central2.
+#
+# Invoked by GitHub Actions (ci-cd.yml) via:
+#   gcloud builds submit \
+#     --project researchdeployments \
+#     --region  me-central2 \
+#     --config  cloudbuild.yaml \
+#     --substitutions _REGISTRY=<registry>,_TAG=<tag>
+#
+# Required substitutions:
+#   _REGISTRY  me-central2-docker.pkg.dev/researchdeployments/nsk-s2s
+#   _TAG       unique build tag (e.g. build-20260517120000-abc1234)
+# =============================================================================
+
+substitutions:
+  _REGISTRY: me-central2-docker.pkg.dev/researchdeployments/nsk-s2s
+  _TAG: latest
+
+options:
+  machineType: E2_HIGHCPU_8
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  # ── Build s2s-agent (Python) ─────────────────────────────────────────────
+  - id: build-agent
+    name: gcr.io/cloud-builders/docker
+    waitFor: ['-']
+    args:
+      - build
+      - --platform=linux/amd64
+      - --cache-from=$_REGISTRY/s2s-agent:latest
+      - -t=$_REGISTRY/s2s-agent:$_TAG
+      - -t=$_REGISTRY/s2s-agent:latest
+      - -f=agent/Dockerfile
+      - agent/
+
+  # ── Build s2s-token-server (Python / FastAPI) ─────────────────────────────
+  - id: build-token-server
+    name: gcr.io/cloud-builders/docker
+    waitFor: ['-']
+    args:
+      - build
+      - --platform=linux/amd64
+      - --cache-from=$_REGISTRY/s2s-token-server:latest
+      - -t=$_REGISTRY/s2s-token-server:$_TAG
+      - -t=$_REGISTRY/s2s-token-server:latest
+      - -f=token-server/Dockerfile
+      - token-server/
+
+  # ── Build s2s-demo (Next.js standalone) ───────────────────────────────────
+  - id: build-demo
+    name: gcr.io/cloud-builders/docker
+    waitFor: ['-']
+    args:
+      - build
+      - --platform=linux/amd64
+      - --cache-from=$_REGISTRY/s2s-demo:latest
+      - -t=$_REGISTRY/s2s-demo:$_TAG
+      - -t=$_REGISTRY/s2s-demo:latest
+      - -f=demo/Dockerfile
+      - demo/
+
+  # ── Push s2s-agent ────────────────────────────────────────────────────────
+  - id: push-agent
+    name: gcr.io/cloud-builders/docker
+    waitFor: [build-agent]
+    args: [push, --all-tags, $_REGISTRY/s2s-agent]
+
+  # ── Push s2s-token-server ─────────────────────────────────────────────────
+  - id: push-token-server
+    name: gcr.io/cloud-builders/docker
+    waitFor: [build-token-server]
+    args: [push, --all-tags, $_REGISTRY/s2s-token-server]
+
+  # ── Push s2s-demo ─────────────────────────────────────────────────────────
+  - id: push-demo
+    name: gcr.io/cloud-builders/docker
+    waitFor: [build-demo]
+    args: [push, --all-tags, $_REGISTRY/s2s-demo]
+
+images:
+  - $_REGISTRY/s2s-agent:$_TAG
+  - $_REGISTRY/s2s-agent:latest
+  - $_REGISTRY/s2s-token-server:$_TAG
+  - $_REGISTRY/s2s-token-server:latest
+  - $_REGISTRY/s2s-demo:$_TAG
+  - $_REGISTRY/s2s-demo:latest

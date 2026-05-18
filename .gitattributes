@@ -1,0 +1,30 @@
+# Normalize line endings to LF on all platforms.
+# This prevents Prettier/ESLint CRLF errors when Windows-edited files
+# are built on Linux (Cloud Build, Docker, GitHub Actions runners).
+
+* text=auto eol=lf
+
+# Explicitly LF for all source files
+*.ts   text eol=lf
+*.tsx  text eol=lf
+*.js   text eol=lf
+*.jsx  text eol=lf
+*.mjs  text eol=lf
+*.json text eol=lf
+*.css  text eol=lf
+*.md   text eol=lf
+*.yaml text eol=lf
+*.yml  text eol=lf
+*.sh   text eol=lf
+*.py   text eol=lf
+
+# Binary — no line-ending conversion
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.woff binary
+*.woff2 binary
+*.ttf  binary
+*.otf  binary
