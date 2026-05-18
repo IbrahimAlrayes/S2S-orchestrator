@@ -83,7 +83,9 @@ data:
   # In-cluster reranker serves `elm_reranker_v1` (vs `.org`'s
   # `elm_rerank_32k_0.6b`). Ranking order matches; absolute scores differ.
   RERANK_MODEL: "elm_reranker_v1"
-  MILVUS_HOST: "milvus.nlp-rag.svc.cluster.local"
+  # Scheme prefix required — MilvusClient rejects bare hostnames. Same
+  # convention local dev uses (`http://host.docker.internal`).
+  MILVUS_HOST: "http://milvus.nlp-rag.svc.cluster.local"
   MILVUS_PORT: "19530"
   MILVUS_COLLECTION: "unified_nusuk_collection4"
 
