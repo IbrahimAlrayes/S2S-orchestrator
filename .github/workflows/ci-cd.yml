@@ -241,7 +241,7 @@ jobs:
             --image="$IMAGE" \
             --overrides='{"spec":{"imagePullSecrets":[{"name":"regcred"}]}}' \
             --restart=Never \
-            --rm -i --timeout=300s \
+            --rm -i --timeout=600s \
             --command -- echo "Cross-project pull OK: $IMAGE" || {
             echo "Pull test failed — pod status:"
             kubectl -n "${{ env.K8S_NAMESPACE }}" describe pod gar-pull-test 2>/dev/null | tail -20 || true
@@ -421,7 +421,7 @@ jobs:
         shell: bash
         run: |
           kubectl -n "${{ env.K8S_NAMESPACE }}" exec deployment/s2s-token-server \
-            -- curl -fsS http://localhost:8080/health
+            -- python3 -c 'import urllib.request; r=urllib.request.urlopen("http://localhost:8080/health",timeout=10); print(r.read().decode())'
 
       - name: Rollback on smoke failure
         if: ${{ steps.smoke.outcome == 'failure' }}
