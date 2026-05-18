@@ -18,6 +18,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
+# Pin HuggingFace cache to /opt (outside /app) so it survives compose
+# bind-mounts in dev AND stays reachable when the container runs as a
+# non-root user (uid 1000 in production GKE). Without this, MultilingualModel()
+# crashes at first session with `Could not find file "languages.json"`
+# because uid 1000's $HOME is `/` and `/root/.cache` is permission-denied.
+ENV HF_HOME=/opt/hf-cache
+RUN mkdir -p /opt/hf-cache && chmod -R 0755 /opt/hf-cache
+
 COPY requirements.txt /app/
 
 RUN pip install --no-cache-dir -r requirements.txt
@@ -34,5 +42,9 @@ COPY prompts /app/prompts
 
 # Download turn detector model weights (cached in image layer)
 RUN python agent.py download-files
+
+# `download-files` ran as root (build user); make the cache world-readable
+# so the runtime user (uid 1000 in production) can read it.
+RUN chmod -R a+rX /opt/hf-cache
 
 CMD ["python", "agent.py", "start"]
