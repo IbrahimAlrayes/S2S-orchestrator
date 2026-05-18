@@ -151,9 +151,9 @@ class AgentSettings(BaseSettings):
     allow_interruptions: bool = Field(default=True)
     discard_audio_if_uninterruptible: bool = Field(default=True)
     min_interruption_duration: float = Field(default=0.5, ge=0.0)
-    min_interruption_words: int = Field(default=0, ge=0)
-    min_endpointing_delay: float = Field(default=0.5, ge=0.0)
-    max_endpointing_delay: float = Field(default=5.0, ge=0.0)
+    min_interruption_words: int = Field(default=1, ge=0)
+    min_endpointing_delay: float = Field(default=0.3, ge=0.0)
+    max_endpointing_delay: float = Field(default=2.0, ge=0.0)
     false_interruption_timeout: float | None = Field(default=2.0, ge=0.0)
     resume_false_interruption: bool = Field(default=True)
     min_consecutive_speech_delay: float = Field(default=0.0, ge=0.0)
@@ -161,6 +161,11 @@ class AgentSettings(BaseSettings):
     participant_identity: str | None = Field(default=None)
     close_on_disconnect: bool = Field(default=True)
     delete_room_on_close: bool = Field(default=False)
+    # Self-hosted noise cancellation via DeepFilterNet3 (Apache-2.0). Off by
+    # default — enabling pulls PyTorch + DeepFilterNet into the agent image
+    # (~600 MB) and adds ~12 ms latency per audio frame. See
+    # agent/plugins/denoiser.py.
+    noise_cancellation: bool = Field(default=False)
 
     @model_validator(mode="after")
     def _load_prompt_file(self) -> "AgentSettings":

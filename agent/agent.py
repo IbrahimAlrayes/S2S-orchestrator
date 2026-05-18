@@ -130,6 +130,16 @@ def _build_room_options(
 ) -> room_io.RoomOptions:
     # ── Room I/O defaults ──────────────────────────────────────────────────────
     # These are intentional fixed values; they don't need to be env-configurable.
+    noise_cancellation = None
+    if agent_settings.noise_cancellation:
+        # Lazy import — only pay the PyTorch + DeepFilterNet load cost when
+        # enabled. Will raise ImportError at first session start if the deps
+        # aren't installed; we want that loud, not silent-fallback.
+        from plugins.denoiser import DeepFilterDenoiser
+
+        noise_cancellation = DeepFilterDenoiser()
+        logger.info("noise_cancellation=deepfilternet3 enabled")
+
     return room_io.RoomOptions(
         text_input=False,  # disable text input channel (voice-only)
         audio_input=room_io.AudioInputOptions(
@@ -138,6 +148,7 @@ def _build_room_options(
             frame_size_ms=50,         # audio capture granularity
             pre_connect_audio=True,   # buffer audio before session is fully ready
             pre_connect_audio_timeout=3.0,  # seconds to wait for pre-connect audio
+            noise_cancellation=noise_cancellation,
         ),
         audio_output=room_io.AudioOutputOptions(
             sample_rate=tts_settings.sample_rate,   # match TTS output format
@@ -362,38 +373,45 @@ async def entrypoint(ctx: JobContext) -> None:
         llm=llm_provider,            # language model
         tts=tts_provider,            # text-to-speech pipeline
         vad=ctx.proc.userdata["vad"],  # voice activity detector (preloaded in prewarm)
-        turn_detection=turn_detection,  # semantic end-of-turn model; None = VAD-only
-        # Speculative TTS during the endpointing-delay window: as soon as the
-        # LLM emits sentence 1 (which itself runs preemptively by default),
-        # fire TTS too. If the user keeps talking (false turn-end), the
-        # speculative LLM+TTS calls are cancelled. Capped at max_retries=3
-        # per turn and skipped for utterances >max_speech_duration=10s.
-        # Saves ~500–1000 ms TTFA on confidently-detected short turns.
-        turn_handling={
-            "preemptive_generation": {"preemptive_tts": True},
-        },
-        # ── Interruption handling ──────────────────────────────────────────────
-        allow_interruptions=agent_settings.allow_interruptions,
-        # whether to discard buffered TTS audio when the user interrupts
-        discard_audio_if_uninterruptible=agent_settings.discard_audio_if_uninterruptible,
-        # minimum seconds of user speech before treating it as an interruption
-        min_interruption_duration=agent_settings.min_interruption_duration,
-        # minimum word count before treating user speech as an interruption
-        min_interruption_words=agent_settings.min_interruption_words,
-        # ── Endpointing (when to consider a turn finished) ─────────────────────
-        # The shortest silence the system waits before deciding the user has finished speaking (seconds)
-        min_endpointing_delay=agent_settings.min_endpointing_delay,
-        # longest silence before forcing an end-of-turn even without model signal (seconds)
-        max_endpointing_delay=agent_settings.max_endpointing_delay,
-        # ── False-interruption recovery ────────────────────────────────────────
-        # seconds to wait before deciding a brief interruption was a false positive
-        false_interruption_timeout=agent_settings.false_interruption_timeout,
-        # resume speaking after a false interruption is detected
-        resume_false_interruption=agent_settings.resume_false_interruption,
         # minimum silence gap before treating consecutive speech segments as one turn
         min_consecutive_speech_delay=agent_settings.min_consecutive_speech_delay,
         # use TTS word-timing to align the transcript instead of real-time STT output
         use_tts_aligned_transcript=agent_settings.use_tts_aligned_transcript,
+        turn_handling={
+            # MultilingualModel for non-Arabic; falls back to VAD-only for Arabic
+            # (Arabic absent from the model's languages.json — tuning the threshold
+            # is a no-op for our primary language).
+            "turn_detection": turn_detection,
+            # Dynamic mode: SDK tracks per-session pause stats via EMA (alpha=0.9)
+            # and slides the wait inside [min_delay, max_delay]. First 2-3 turns
+            # behave like fixed; then adapts to this user's pace. Zero added
+            # latency — only different wait duration.
+            "endpointing": {
+                "mode": "dynamic",
+                "min_delay": agent_settings.min_endpointing_delay,
+                "max_delay": agent_settings.max_endpointing_delay,
+            },
+            # VAD-based interruption (NOT adaptive — adaptive requires LiveKit's
+            # hosted inference service and would silently fall back to VAD on
+            # self-hosted anyway). min_words=1 filters coughs/mic bumps.
+            "interruption": {
+                "enabled": agent_settings.allow_interruptions,
+                "mode": "vad",
+                "discard_audio_if_uninterruptible": agent_settings.discard_audio_if_uninterruptible,
+                "min_duration": agent_settings.min_interruption_duration,
+                "min_words": agent_settings.min_interruption_words,
+                "false_interruption_timeout": agent_settings.false_interruption_timeout,
+                "resume_false_interruption": agent_settings.resume_false_interruption,
+            },
+            # Preemptive LLM is on by SDK default; we additionally turn on
+            # preemptive_tts so TTS fires on sentence 1 of the speculative LLM
+            # stream. Cancelled if the user keeps talking. Saves 500-1000 ms
+            # TTFA on confidently-detected short turns.
+            "preemptive_generation": {
+                "enabled": True,
+                "preemptive_tts": True,
+            },
+        },
     )
 
     @session.on("user_input_transcribed")

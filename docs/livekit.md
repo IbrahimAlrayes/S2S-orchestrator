@@ -185,7 +185,10 @@ The Next.js demo token route (`/api/token`) does the same thing with the TypeScr
 | `proc.userdata` for cross-session state | prewarm + entrypoint | Holds VAD instance, shared `httpx.AsyncClient`, `NusukTokenManager` — sessions on the same worker reuse them |
 | `stt.StreamAdapter(stt=..., vad=...)` | entrypoint | Wraps non-streaming STT with VAD-segmented streaming interface |
 | Sentence-buffered LLM → TTS | AgentSession default | TTS for sentence 1 fires before LLM finishes streaming sentence 2 |
-| Pre-emptive generation (LLM + TTS) | `turn_handling={"preemptive_generation": {"preemptive_tts": True}}` in entrypoint | LLM kicks off before turn-end is fully confirmed; TTS also fires speculatively on sentence 1 of the speculative LLM stream |
+| Pre-emptive generation (LLM + TTS) | `turn_handling.preemptive_generation` in entrypoint | LLM kicks off before turn-end is fully confirmed (SDK default `enabled=True`); TTS also fires speculatively on sentence 1 of the speculative LLM stream (`preemptive_tts=True`, we set it; default is `False`) |
+| Dynamic endpointing | `turn_handling.endpointing.mode="dynamic"` in entrypoint | EMA-smoothed (`alpha=0.9`) per-session pause statistics adapt the wait inside `[min_delay, max_delay]`. Zero added latency. First 2–3 turns still behave like fixed because the EMA hasn't seeded |
+| VAD interruption + word floor | `turn_handling.interruption.mode="vad"` + `min_words=1` | Kept on VAD because adaptive mode (`mode="adaptive"`) calls LiveKit's hosted inference service; on self-hosted it silently falls back to VAD anyway. `min_words=1` filters coughs / mic bumps |
+| Self-hosted noise cancellation (optional) | [`agent/plugins/denoiser.py::DeepFilterDenoiser`](../agent/plugins/denoiser.py) wired via `room_io.AudioInputOptions.noise_cancellation` when `AGENT_NOISE_CANCELLATION=true` | DeepFilterNet3 (Apache-2.0); ~10 ms algorithmic latency, ~2 ms compute per 10 ms frame on server CPU. Pulls torch (~600 MB image bloat) so default off |
 | `record_turn_metrics(session.history)` (per-turn metrics) | [agent/metrics.py](../agent/metrics.py) + entrypoint `finally` | Walks `ChatMessage.metrics` into 5 multiproc-safe Prometheus histograms (e2e, llm_ttft, tts_ttfb, transcription_delay, end_of_turn_delay) |
 | Streaming TTS via `httpx.stream` | [agent/plugins/custom_tts.py](../agent/plugins/custom_tts.py) | PCM pushed to `output_emitter` chunk-by-chunk as bytes arrive instead of awaiting full WAV body — ~360 ms TTFA savings per sentence |
 | `MultilingualModel` turn detector | entrypoint (optional dep) | Semantic end-of-turn; falls back to VAD when language is unsupported (e.g. `ar`) |
@@ -223,10 +226,10 @@ Surveyed `/usr/local/lib/python3.11/site-packages/livekit/agents/` 2026-05-07. T
 
 ### Top 3 to Do Next
 
-Both originally-#1 (pre-emptive TTS) and originally-#2 (per-turn metrics, equivalent to OTel histograms) have shipped — see "SDK Features We Already Use". Remaining priorities:
+Pre-emptive TTS, per-turn metrics, dynamic endpointing, VAD interruption with `min_words=1`, and the DeepFilterNet noise-cancellation hook have shipped — see "SDK Features We Already Use". Remaining priorities:
 
 1. **STT/TTS FallbackAdapter** — only worth it once we have a second backend (e.g. fallback to a local Whisper or Edge-TTS). Architecturally important for production uptime.
-2. **Adaptive interruption detector** — replaces VAD-only interrupt detection. Reduces false interrupts when user makes backchannel sounds ("uh-huh", "نعم"). `turn_handling.interruption.mode="adaptive"`.
+2. ~~**Adaptive interruption detector**~~ — deferred. Requires LiveKit's hosted inference service; on self-hosted it silently falls back to VAD. Revisit if/when we move to LiveKit Cloud.
 3. **`utils.connection_pool.ConnectionPool`** — relevant once any backend moves to WebSocket; not needed while everything is HTTP/2 over the shared httpx client.
 
 ## Room Events Used
