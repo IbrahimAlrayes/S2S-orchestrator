@@ -41,7 +41,9 @@ class RerankerModelAsync:
     ) -> None:
         model_cfg = load_config("models.json")["RERANKER"]
         search_cfg = load_config("milvus.json")["SEARCH_CONFIG"]
-        self.model_name: str = model_cfg["MODEL_NAME"]
+        # Env override lets dev (`.org` serves `elm_rerank_32k_0.6b`) and prod
+        # (in-cluster vLLM serves `elm_reranker_v1`) share the same image.
+        self.model_name: str = os.getenv("RERANK_MODEL") or model_cfg["MODEL_NAME"]
         self.top_k_to_rerank: int = search_cfg.get("TOP_K_TO_RERANK", 10)
 
         self._url = url
